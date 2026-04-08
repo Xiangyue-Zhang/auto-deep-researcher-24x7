@@ -79,7 +79,7 @@ cd auto-deep-researcher-24x7
 # Install dependencies
 pip install -r requirements.txt
 
-# Install Claude Code / Codex skills (7 slash commands)
+# Install Claude Code / Codex skills (8 slash commands)
 python install.py
 
 # Verify
@@ -95,7 +95,8 @@ python -m core.loop --check
     ✓ /paper-analyze
     ✓ /conf-search
     ✓ /progress-report
-  Done! 7 skills installed.
+    ✓ /obsidian-sync
+  Done! 8 skills installed.
 ```
 
 ### Step 3: Choose Your LLM Provider
@@ -221,6 +222,26 @@ Check back anytime with /experiment-status."
 cat ~/PROJECT_NAME/workspace/MEMORY_LOG.md    # See results and decisions
 cat ~/PROJECT_NAME/workspace/.cycle_counter   # See how many cycles completed
 nvidia-smi                                     # See GPU usage
+```
+
+For persistent progress notes:
+
+```yaml
+obsidian:
+  enabled: true
+  vault_path: "~/Documents/MyObsidianVault"   # Optional
+  project_subdir: "DeepResearcher/{project_name}"
+  auto_append_daily: true
+```
+
+- If `vault_path` is set, write `Dashboard.md` and daily Markdown notes into that Obsidian vault.
+- If `vault_path` is empty, fall back to project-local text files under `workspace/progress_tracking/`.
+- Manual refresh:
+
+```bash
+/obsidian-sync --project ~/PROJECT_NAME
+# or
+python -m core.obsidian --project ~/PROJECT_NAME
 ```
 
 ---

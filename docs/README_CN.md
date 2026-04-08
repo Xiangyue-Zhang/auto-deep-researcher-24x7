@@ -657,7 +657,7 @@ python install.py --uninstall
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Xiangyue-Zhang/auto-deep-researcher-24x7&type=Date)](https://star-history.com/#Xiangyue-Zhang/auto-deep-researcher-24x7&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=Xiangyue-Zhang/auto-deep-researcher-24x7&type=Date)](https://www.star-history.com/#Xiangyue-Zhang/auto-deep-researcher-24x7&Date)
 
 ## 协议
 

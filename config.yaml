@@ -38,3 +38,12 @@ experiment:
   mandatory_dry_run: true         # Always dry-run before real training
   max_parallel: 1                 # Max concurrent experiments
   log_tail_lines: 50              # Lines to capture from training log
+
+obsidian:
+  enabled: false                  # Enable progress exports
+  vault_path: ""                  # Optional: direct write into Obsidian vault
+  project_subdir: "DeepResearcher/{project_name}"
+  dashboard_note: "Dashboard.md"
+  daily_dir: "Daily"
+  auto_append_daily: true
+  local_fallback_dir: "progress_tracking"

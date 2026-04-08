@@ -35,13 +35,140 @@
 
 ---
 
-> **First time here? Don't worry.** You don't need to read this entire README. Just do ONE thing:
->
-> 1. Open [`AI_GUIDE.md`](AI_GUIDE.md) and paste it into **Claude / ChatGPT / Codex**
-> 2. The AI will walk you through everything — install, setup, your first experiment
-> 3. That's it. No stress. We'll take it one step at a time.
->
-> *Want to understand how it works first? Keep reading below.*
+## Recent Updates
+
+**2026-04-08**
+- Added progress tracking exports for experiment monitoring.
+- Supports optional Obsidian sync for a live dashboard plus daily notes.
+- If no Obsidian vault is configured, progress falls back to project-local text files under `workspace/progress_tracking/`.
+
+## Start In 3 Steps
+
+If you only want the shortest path to a working experiment loop, do this:
+
+1. Create a project folder with one file: `PROJECT_BRIEF.md`
+2. Run `/auto-experiment --project /path/to/project --gpu 0`
+3. Check progress with `/experiment-status` or optional Obsidian/local text notes
+
+Prefer AI-guided setup? Open [`AI_GUIDE.md`](AI_GUIDE.md) in Claude / ChatGPT / Codex and let the assistant walk you through it.
+
+## What You Actually Need
+
+| Requirement | Required | Notes |
+|-------------|----------|-------|
+| Python 3.10+ | Yes | Runtime |
+| 1+ NVIDIA GPU | Yes | For training |
+| API key | Yes | Anthropic or OpenAI |
+| `PROJECT_BRIEF.md` | Yes | Main control file |
+| Project `config.yaml` | Optional | Only if you want to override defaults |
+| Obsidian vault | Optional | If absent, notes fall back to local text files |
+
+## Minimum Working Example
+
+The smallest project you can launch looks like this:
+
+```text
+my-first-experiment/
+├── PROJECT_BRIEF.md
+└── workspace/                  # auto-created
+```
+
+Minimal `PROJECT_BRIEF.md`:
+
+```md
+# Goal
+Train a ResNet-50 on CIFAR-100 to reach 80%+ accuracy.
+
+# Codebase
+Create the training code from scratch in PyTorch.
+
+# What to Try
+- Start with a basic ResNet-50 baseline.
+- If accuracy < 75%, improve optimization and schedule.
+- If accuracy is 75-80%, try augmentation.
+- If accuracy > 80%, stop and report.
+
+# Constraints
+- Use GPU 0 only
+- Max 100 epochs per run
+```
+
+That is enough to start. Everything else is optional refinement.
+
+## What This Project Is Good At
+
+This project is for people who already know what experiment they want to run, but do not want to babysit the loop:
+
+- edit code
+- launch training
+- monitor runs
+- parse logs
+- decide the next variation
+- keep going while you sleep
+
+It is not trying to replace the researcher. It is trying to take over the repetitive experiment-ops layer.
+
+## Why It Feels Different From A Simple Script
+
+- It does not just launch one run. It keeps iterating.
+- It does not just monitor. It reflects and decides the next step.
+- It stays cheap because training-time monitoring makes zero LLM calls.
+- It stays controllable because the human can override direction at any cycle.
+- It now supports persistent progress notes in Obsidian or local text files.
+
+## How You Stay In Control
+
+You control the research direction through three files:
+
+- `PROJECT_BRIEF.md`: stable goal, constraints, allowed search space
+- `HUMAN_DIRECTIVE.md`: temporary redirect for the next cycle
+- `workspace/MEMORY_LOG.md`: rolling memory of results and decisions
+
+Common control patterns:
+
+```md
+# Keep the search narrow
+- Only tune augmentation.
+- Do not change the backbone.
+- Keep training budget fixed.
+```
+
+```md
+# Make the agent stop exploring a weak direction
+- If gain stays below 0.3 points for 3 runs, stop this branch.
+- Return to the last trusted baseline and try a different idea.
+```
+
+```md
+# Force result verification
+- If a result looks unusually strong, rerun with the same seed and one new seed.
+- Do not claim improvement until both reproduce.
+```
+
+## How You See Progress
+
+You should never have to guess what the agent is doing.
+
+- `/experiment-status` shows current goal, best result, cycle count, running status, and recent decisions
+- `/progress-report` generates a structured summary
+- `/obsidian-sync` refreshes persistent notes manually
+- `workspace/progress_tracking/` stores local text notes when no Obsidian vault is configured
+
+If you want a dashboard outside the terminal:
+
+```yaml
+obsidian:
+  enabled: true
+  vault_path: "~/Documents/MyObsidianVault"   # Optional
+  auto_append_daily: true
+```
+
+If `vault_path` is empty, the same information is saved locally:
+
+```text
+workspace/progress_tracking/Dashboard.txt
+workspace/progress_tracking/Daily/YYYY-MM-DD.txt
+```
 
 ---
 
@@ -71,15 +198,11 @@ We trust the people who pick up this tool to take that seriously — and we buil
 
 ---
 
-## The Problem
+## The Core Idea
 
-You design an experiment. You launch training. You wait 6 hours. You check results. You tweak hyperparameters. You launch again. You wait another 6 hours. **You do this 200 times until the paper deadline.**
+You design the experiment. The agent handles the repetitive loop.
 
-What if an AI agent did all of that — autonomously, 24/7, while you sleep?
-
-## The Solution
-
-**Experiment Agent** is a framework where an AI agent:
+**Deep Researcher Agent**:
 
 1. **Thinks** — Reads your project brief, analyzes previous results, plans the next experiment
 2. **Executes** — Modifies code/configs, runs a dry-run, launches training on GPU
@@ -238,7 +361,7 @@ cd auto-deep-researcher-24x7
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Install 7 slash commands into Claude Code
+# Install 8 slash commands into Claude Code
 python install.py
 
 # Verify everything works
@@ -258,7 +381,9 @@ You should see:
     ✓ /conf-search
     ✓ /progress-report
 
-  Done! 7 skills installed.
+    ✓ /obsidian-sync
+
+  Done! 8 skills installed.
 ```
 
 ### Step 2: Create Your First Project
@@ -380,6 +505,72 @@ You'll see something like:
 # Experiment Status — my-first-experiment
 
 ## Goal
+ResNet-50 on CIFAR-100 → 80%+ accuracy
+
+## Progress
+- Cycles completed: 3
+- Current best: 79.1% (Exp003: ResNet-50 + mixup + cosine)
+- Status: TRAINING (PID 12389, GPU 0, running 1.5h)
+
+## Key Results
+[04-07 15:00] Exp001: ResNet-50 baseline, 76.3%
+[04-07 18:30] Exp002: + cosine annealing, 77.8%
+[04-07 22:00] Exp003: + mixup α=0.2, 79.1%   ← best
+
+## Current Training
+Epoch 67/100 | loss: 0.71 | acc: 79.4%
+```
+
+### Step 5.5: Save Progress to Obsidian or Local Text
+
+Enable progress export in your project `config.yaml`:
+
+```yaml
+obsidian:
+  enabled: true
+  vault_path: "~/Documents/MyObsidianVault"   # Optional
+  project_subdir: "DeepResearcher/{project_name}"
+  auto_append_daily: true
+```
+
+If `vault_path` is set, the agent writes:
+
+```text
+DeepResearcher/my-first-experiment/Dashboard.md
+DeepResearcher/my-first-experiment/Daily/YYYY-MM-DD.md
+```
+
+If `vault_path` is empty, it falls back to project-local files:
+
+```text
+workspace/progress_tracking/Dashboard.txt
+workspace/progress_tracking/Daily/YYYY-MM-DD.txt
+```
+
+Manual refresh:
+
+```bash
+/obsidian-sync --project ~/my-first-experiment
+# or
+python -m core.obsidian --project ~/my-first-experiment
+```
+
+### Step 6: Intervene If Needed
+
+Want to change direction? Three ways, from anywhere:
+
+```bash
+# Way 1: Drop a directive file (agent reads it next cycle)
+echo "Stop trying ResNet. Switch to ViT-B/16, start with lr=1e-3" \
+  > ~/my-first-experiment/workspace/HUMAN_DIRECTIVE.md
+
+# Way 2: Command-line flag
+python -m core.loop --project ~/my-first-experiment \
+  --directive "Try label smoothing 0.1"
+
+# Way 3: Edit memory directly (for permanent changes)
+vim ~/my-first-experiment/workspace/MEMORY_LOG.md
+```
 
 ## Human-in-the-Loop Playbook
 
@@ -434,40 +625,6 @@ Case 3: Suspicious result
 ```
 
 Rule of thumb: let the agent handle repetition, but keep direction, interpretation, and responsibility human.
-
----
-ResNet-50 on CIFAR-100 → 80%+ accuracy
-
-## Progress
-- Cycles completed: 3
-- Current best: 79.1% (Exp003: ResNet-50 + mixup + cosine)
-- Status: TRAINING (PID 12389, GPU 0, running 1.5h)
-
-## Key Results
-[04-07 15:00] Exp001: ResNet-50 baseline, 76.3%
-[04-07 18:30] Exp002: + cosine annealing, 77.8%
-[04-07 22:00] Exp003: + mixup α=0.2, 79.1%   ← best
-
-## Current Training
-Epoch 67/100 | loss: 0.71 | acc: 79.4%
-```
-
-### Step 6: Intervene If Needed
-
-Want to change direction? Three ways, from anywhere:
-
-```bash
-# Way 1: Drop a directive file (agent reads it next cycle)
-echo "Stop trying ResNet. Switch to ViT-B/16, start with lr=1e-3" \
-  > ~/my-first-experiment/workspace/HUMAN_DIRECTIVE.md
-
-# Way 2: Command-line flag
-python -m core.loop --project ~/my-first-experiment \
-  --directive "Try label smoothing 0.1"
-
-# Way 3: Edit memory directly (for permanent changes)
-vim ~/my-first-experiment/workspace/MEMORY_LOG.md
-```
 
 ### Step 7: Mobile Monitoring with [Happy Coder](https://github.com/slopus/happy) (Optional)
 
@@ -637,7 +794,7 @@ All features are packaged as Claude Code slash commands. **One command to instal
 python install.py
 ```
 
-After installation, you get **7 slash commands** in Claude Code:
+After installation, you get **8 slash commands** in Claude Code:
 
 ### Core Skills
 
@@ -655,6 +812,7 @@ After installation, you get **7 slash commands** in Claude Code:
 | `/paper-analyze 2312.12345` | Deep paper analysis + extract real figures from arXiv source |
 | `/conf-search --venue CVPR2025 --query "motion"` | Search CVPR/NeurIPS/ICML/ICLR/AAAI/ECCV... |
 | `/progress-report` | Generate structured progress report with metrics |
+| `/obsidian-sync` | Refresh Obsidian or local progress notes |
 
 ### Usage Example
 
@@ -837,13 +995,7 @@ Or cite the software release:
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=Xiangyue-Zhang%2Fauto-deep-researcher-24x7&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Xiangyue-Zhang/auto-deep-researcher-24x7&type=date&theme=dark&legend=top-left&v=1" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Xiangyue-Zhang/auto-deep-researcher-24x7&type=date&legend=top-left&v=1" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Xiangyue-Zhang/auto-deep-researcher-24x7&type=date&legend=top-left&v=1" />
- </picture>
-</a>
+[![Star History Chart](https://api.star-history.com/svg?repos=Xiangyue-Zhang/auto-deep-researcher-24x7&type=Date)](https://www.star-history.com/#Xiangyue-Zhang/auto-deep-researcher-24x7&Date)
 
 ## License
 

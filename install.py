@@ -12,6 +12,7 @@ After installation, these slash commands are available in Claude Code:
     /paper-analyze       — Deep paper analysis with figure extraction
     /conf-search         — Search top conference papers
     /progress-report     — Generate structured progress report
+    /obsidian-sync       — Refresh Obsidian dashboard and daily notes
 """
 
 import shutil
@@ -78,6 +79,7 @@ def install():
     print("    /paper-analyze       Deep paper analysis")
     print("    /conf-search         Conference paper search")
     print("    /progress-report     Generate progress report")
+    print("    /obsidian-sync       Refresh Obsidian notes")
     print()
     print("  Quick start:")
     print("    1. Create a project with PROJECT_BRIEF.md")

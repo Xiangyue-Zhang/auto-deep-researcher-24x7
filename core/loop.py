@@ -17,6 +17,7 @@ from typing import Optional
 from .memory import MemoryManager
 from .monitor import ExperimentMonitor
 from .agents import AgentDispatcher
+from .obsidian import ObsidianExporter
 from .tools import ToolRegistry
 
 logger = logging.getLogger("autoresearcher")
@@ -36,6 +37,7 @@ class ResearchLoop:
         self.project_dir = Path(project_dir).resolve()
         self.workspace = self.project_dir / config.get("project", {}).get("workspace", "workspace")
         self.workspace.mkdir(exist_ok=True)
+        self.state_path = self.workspace / "state.json"
 
         # Core components
         self.memory = MemoryManager(
@@ -55,6 +57,7 @@ class ResearchLoop:
             max_steps=config.get("agent", {}).get("max_steps_per_cycle", 3),
         )
         self.tools = ToolRegistry(self.workspace)
+        self.obsidian = ObsidianExporter(config=config, project_dir=self.project_dir)
 
         # State
         self.cycle_count = self._load_cycle_counter()
@@ -82,6 +85,14 @@ class ResearchLoop:
             try:
                 # Check for human directive
                 directive = self._consume_directive()
+                self._update_state(
+                    {
+                        "cycle": self.cycle_count,
+                        "status": "planning",
+                        "updated_at": time.time(),
+                        "last_directive": directive or "",
+                    }
+                )
 
                 # THINK: Analyze and plan
                 think_result = self._think(directive)
@@ -95,17 +106,59 @@ class ResearchLoop:
                 execute_result = self._execute(think_result)
 
                 if execute_result.get("experiment_launched"):
+                    self._update_state(
+                        {
+                            "cycle": self.cycle_count,
+                            "status": "running",
+                            "pid": execute_result.get("pid"),
+                            "log_file": execute_result.get("log_file", ""),
+                            "started_at": time.time(),
+                            "updated_at": time.time(),
+                        }
+                    )
                     # Monitor experiment (zero LLM cost)
                     monitor_result = self._monitor_experiment(execute_result)
                     execute_result["training_logs"] = monitor_result.get("log_tail", "")
                     execute_result["final_metrics"] = monitor_result.get("metrics", {})
+                    self._update_state(
+                        {
+                            "status": "completed",
+                            "pid": execute_result.get("pid"),
+                            "log_file": execute_result.get("log_file", ""),
+                            "updated_at": time.time(),
+                            "last_training_logs": monitor_result.get("log_tail", ""),
+                            "last_metrics": monitor_result.get("metrics", {}),
+                            "elapsed_hours": monitor_result.get("elapsed_hours"),
+                        }
+                    )
 
                 # REFLECT: Evaluate and update
-                self._reflect(execute_result)
+                reflect_result = self._reflect(execute_result)
+                self._update_state(
+                    {
+                        "cycle": self.cycle_count,
+                        "updated_at": time.time(),
+                        "last_milestone": reflect_result.get("milestone", ""),
+                        "last_decision": reflect_result.get("decision", ""),
+                        "suggested_next_step": reflect_result.get("decision")
+                        or reflect_result.get("reason")
+                        or reflect_result.get("task", ""),
+                        "last_error": "",
+                    }
+                )
+                self._refresh_obsidian(reflect_result=reflect_result, directive=directive)
 
             except Exception as e:
                 logger.error(f"Cycle {self.cycle_count} failed: {e}", exc_info=True)
                 self.memory.log_decision(f"Cycle {self.cycle_count} error: {str(e)[:200]}")
+                self._update_state(
+                    {
+                        "cycle": self.cycle_count,
+                        "status": "error",
+                        "updated_at": time.time(),
+                        "last_error": str(e)[:500],
+                    }
+                )
                 self._cooldown_after_error()
 
         logger.info("AutoResearcher stopped.")
@@ -183,6 +236,18 @@ class ResearchLoop:
 
         return result
 
+    def _refresh_obsidian(self, reflect_result: dict, directive: Optional[str]):
+        if not self.obsidian.is_enabled():
+            return
+        self.obsidian.refresh_dashboard(memory=self.memory, cycle_count=self.cycle_count)
+        self.obsidian.append_daily_entry(
+            memory=self.memory,
+            cycle_count=self.cycle_count,
+            event_type="cycle_complete",
+            reflection=reflect_result,
+            directive=directive,
+        )
+
     def _smart_cooldown(self):
         """Poll at short intervals instead of fixed long wait."""
         logger.info(f"Smart cooldown: polling every {self.cooldown}s")
@@ -226,6 +291,19 @@ class ResearchLoop:
     def _save_cycle_counter(self):
         counter_file = self.workspace / ".cycle_counter"
         counter_file.write_text(str(self.cycle_count))
+
+    def _load_state(self) -> dict:
+        if self.state_path.exists():
+            try:
+                return json.loads(self.state_path.read_text())
+            except json.JSONDecodeError:
+                return {}
+        return {}
+
+    def _update_state(self, updates: dict):
+        state = self._load_state()
+        state.update(updates)
+        self.state_path.write_text(json.dumps(state, indent=2))
 
     def _handle_signal(self, signum, frame):
         logger.info(f"Received signal {signum}. Initiating graceful shutdown.")
