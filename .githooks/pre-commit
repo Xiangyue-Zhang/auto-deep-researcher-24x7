@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+ALLOWED_NAME="Xiangyue-Zhang"
+ALLOWED_EMAIL="85532891+Xiangyue-Zhang@users.noreply.github.com"
+
+AUTHOR_IDENT="$(git var GIT_AUTHOR_IDENT)"
+AUTHOR_NAME="$(printf '%s' "$AUTHOR_IDENT" | sed -E 's/^(.*) <.*$/\1/')"
+AUTHOR_EMAIL="$(printf '%s' "$AUTHOR_IDENT" | sed -E 's/^.* <([^>]*)>.*$/\1/')"
+
+if [ "$AUTHOR_NAME" != "$ALLOWED_NAME" ]; then
+  echo "ERROR: author name must be '$ALLOWED_NAME' but is '$AUTHOR_NAME'" >&2
+  exit 1
+fi
+
+if [ "$AUTHOR_EMAIL" != "$ALLOWED_EMAIL" ]; then
+  echo "ERROR: author email must be '$ALLOWED_EMAIL' but is '$AUTHOR_EMAIL'" >&2
+  exit 1
+fi

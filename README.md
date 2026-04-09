@@ -37,6 +37,11 @@
 
 ## Recent Updates
 
+**2026-04-09**
+- Reduced token growth by resetting leader context between cycles.
+- Added a lightweight fallback to avoid repeated no-progress loops.
+- Hardened tool execution against path traversal and shell injection.
+
 **2026-04-08**
 - Added progress tracking exports for experiment monitoring.
 - Supports optional Obsidian sync for a live dashboard plus daily notes.

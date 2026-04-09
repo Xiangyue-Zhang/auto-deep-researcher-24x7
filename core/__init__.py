@@ -6,5 +6,5 @@ from .monitor import ExperimentMonitor
 from .agents import AgentDispatcher
 from .tools import ToolRegistry
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["ResearchLoop", "MemoryManager", "ExperimentMonitor", "AgentDispatcher", "ToolRegistry"]

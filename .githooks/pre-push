@@ -1,0 +1,49 @@
+#!/bin/sh
+set -eu
+
+ALLOWED_NAME="Xiangyue-Zhang"
+ALLOWED_EMAIL="85532891+Xiangyue-Zhang@users.noreply.github.com"
+
+check_commit() {
+  sha="$1"
+  author_name="$(git show -s --format='%an' "$sha")"
+  author_email="$(git show -s --format='%ae' "$sha")"
+  message="$(git show -s --format='%B' "$sha")"
+
+  if [ "$author_name" != "$ALLOWED_NAME" ]; then
+    echo "ERROR: commit $sha has author '$author_name', expected '$ALLOWED_NAME'" >&2
+    exit 1
+  fi
+
+  if [ "$author_email" != "$ALLOWED_EMAIL" ]; then
+    echo "ERROR: commit $sha has email '$author_email', expected '$ALLOWED_EMAIL'" >&2
+    exit 1
+  fi
+
+  if printf '%s\n' "$message" | grep -qiE '^Co-Authored-By:'; then
+    echo "ERROR: commit $sha contains forbidden Co-Authored-By trailer" >&2
+    exit 1
+  fi
+
+  if printf '%s\n' "$message" | grep -qiE '\b(claude|anthropic|openai|gpt-[0-9]|copilot|cursor|codex)\b'; then
+    echo "ERROR: commit $sha contains forbidden AI assistant name in message" >&2
+    exit 1
+  fi
+}
+
+while read -r local_ref local_sha remote_ref remote_sha
+do
+  if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    range="$local_sha"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+
+  for sha in $(git rev-list "$range"); do
+    check_commit "$sha"
+  done
+done

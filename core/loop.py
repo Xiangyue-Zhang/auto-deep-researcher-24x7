@@ -63,7 +63,10 @@ class ResearchLoop:
         self.cycle_count = self._load_cycle_counter()
         self.max_cycles = config.get("agent", {}).get("max_cycles", -1)
         self.cooldown = config.get("agent", {}).get("cooldown_interval", 300)
+        self.no_progress_fallback_threshold = config.get("agent", {}).get("no_progress_fallback_threshold", 3)
         self._running = True
+        self._no_progress_streak = 0
+        self._last_no_progress_signature = ""
 
         # Graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -83,6 +86,9 @@ class ResearchLoop:
             logger.info(f"=== Cycle {self.cycle_count} ===")
 
             try:
+                # Keep leader context bounded to one cycle.
+                self.dispatcher.reset_leader_history()
+
                 # Check for human directive
                 directive = self._consume_directive()
                 self._update_state(
@@ -96,9 +102,18 @@ class ResearchLoop:
 
                 # THINK: Analyze and plan
                 think_result = self._think(directive)
+                think_result = self._apply_no_progress_fallback(think_result, directive)
 
                 if think_result.get("action") == "wait":
                     logger.info("THINK decided to wait. Entering cooldown.")
+                    self._update_state(
+                        {
+                            "cycle": self.cycle_count,
+                            "status": "waiting",
+                            "updated_at": time.time(),
+                            "suggested_next_step": think_result.get("reason", ""),
+                        }
+                    )
                     self._smart_cooldown()
                     continue
 
@@ -146,6 +161,7 @@ class ResearchLoop:
                         "last_error": "",
                     }
                 )
+                self._record_cycle_outcome(think_result, execute_result, reflect_result)
                 self._refresh_obsidian(reflect_result=reflect_result, directive=directive)
 
             except Exception as e:
@@ -247,6 +263,69 @@ class ResearchLoop:
             reflection=reflect_result,
             directive=directive,
         )
+
+    def _plan_signature(self, plan: dict) -> str:
+        """Build a stable signature for repeated-plan detection."""
+        normalized = {
+            "action": plan.get("action", ""),
+            "agent": plan.get("agent", ""),
+            "task": " ".join(plan.get("task", "").split())[:300],
+            "hypothesis": " ".join(plan.get("hypothesis", "").split())[:200],
+        }
+        return json.dumps(normalized, sort_keys=True, ensure_ascii=True)
+
+    def _apply_no_progress_fallback(self, think_result: dict, directive: Optional[str]) -> dict:
+        """Back off if the same experiment plan keeps repeating without progress."""
+        if directive or self.no_progress_fallback_threshold <= 0:
+            return think_result
+
+        if think_result.get("action") != "experiment":
+            return think_result
+
+        signature = self._plan_signature(think_result)
+        if (
+            self._no_progress_streak >= self.no_progress_fallback_threshold
+            and signature == self._last_no_progress_signature
+        ):
+            reason = (
+                f"Fallback triggered after {self._no_progress_streak} no-progress cycles on the same plan. "
+                "Backing off to avoid empty loops until new signal arrives."
+            )
+            logger.warning(reason)
+            self.memory.log_decision(reason)
+            return {
+                "action": "wait",
+                "reason": reason,
+                "decision": reason,
+            }
+
+        return think_result
+
+    def _record_cycle_outcome(self, think_result: dict, execute_result: dict, reflect_result: dict):
+        """Track whether repeated cycles are producing real progress."""
+        if think_result.get("action") != "experiment":
+            if think_result.get("action") != "wait":
+                self._no_progress_streak = 0
+                self._last_no_progress_signature = ""
+            return
+
+        signature = self._plan_signature(think_result)
+        made_progress = bool(
+            execute_result.get("experiment_launched")
+            or execute_result.get("final_metrics")
+            or reflect_result.get("milestone")
+        )
+
+        if made_progress:
+            self._no_progress_streak = 0
+            self._last_no_progress_signature = ""
+            return
+
+        if signature == self._last_no_progress_signature:
+            self._no_progress_streak += 1
+        else:
+            self._last_no_progress_signature = signature
+            self._no_progress_streak = 1
 
     def _smart_cooldown(self):
         """Poll at short intervals instead of fixed long wait."""

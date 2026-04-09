@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+MSG_FILE="$1"
+
+if grep -qiE '^Co-Authored-By:' "$MSG_FILE"; then
+  echo "ERROR: Co-Authored-By trailers are forbidden in this repository." >&2
+  exit 1
+fi
+
+if grep -qiE '\b(claude|anthropic|openai|gpt-[0-9]|copilot|cursor|codex)\b' "$MSG_FILE"; then
+  echo "ERROR: AI assistant names are forbidden in commit messages for this repository." >&2
+  exit 1
+fi
