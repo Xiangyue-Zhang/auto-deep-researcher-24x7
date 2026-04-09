@@ -46,7 +46,7 @@ jobs:
 
           FAIL=0
           ALLOWED_NAME="Xiangyue-Zhang"
-          ALLOWED_EMAILS="85532891\\+Xiangyue-Zhang@users\\.noreply\\.github\\.com|Xiangyue-Zhang@users\\.noreply\\.github\\.com"
+          ALLOWED_EMAIL="85532891+Xiangyue-Zhang@users.noreply.github.com"
 
           for sha in $(git log --format='%H' "$RANGE" 2>/dev/null || git log --format='%H' HEAD); do
             AN=$(git show -s --format='%an' "$sha")
@@ -63,8 +63,8 @@ jobs:
             fi
 
             # Check author email
-            if ! echo "$AE" | grep -qE "^($ALLOWED_EMAILS)$"; then
-              echo "  ❌ author email '$AE' is not in allow-list"
+            if [ "$AE" != "$ALLOWED_EMAIL" ]; then
+              echo "  ❌ author email '$AE' is not '$ALLOWED_EMAIL'"
               FAIL=1
             fi
 
@@ -76,8 +76,8 @@ jobs:
 
             # Check for AI assistant names in commit message
             if echo "$MSG" | grep -qiE '\b(claude|anthropic|openai|gpt-[0-9]|copilot|cursor|codex)\b'; then
-              echo "  ⚠️  commit message mentions AI assistant name (allowed if intentional, but flagged)"
-              # warn only — do not fail, since legitimate features may mention these
+              echo "  ❌ commit message mentions forbidden AI assistant name"
+              FAIL=1
             fi
 
             echo ""

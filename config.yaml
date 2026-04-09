@@ -18,6 +18,7 @@ agent:
   max_cycles: -1                  # -1 = run forever
   max_steps_per_cycle: 3          # Max worker dispatches per cycle
   cooldown_interval: 300          # Smart cooldown polling interval (seconds)
+  no_progress_fallback_threshold: 3  # Back off after repeated no-progress cycles on the same plan
 
 memory:
   brief_max_chars: 3000           # Tier 1: PROJECT_BRIEF cap

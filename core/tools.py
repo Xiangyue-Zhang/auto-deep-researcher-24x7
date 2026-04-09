@@ -9,6 +9,7 @@ import os
 import subprocess
 import json
 import logging
+import shlex
 from pathlib import Path
 from typing import Optional
 
@@ -28,7 +29,7 @@ class ToolRegistry:
     """
 
     def __init__(self, workspace: Path):
-        self.workspace = Path(workspace)
+        self.workspace = Path(workspace).resolve()
         self._protected_files = {"state.json", "MEMORY_LOG.md", "PROJECT_BRIEF.md", ".lock"}
 
     def get_tools_for(self, agent_type: str) -> list[dict]:
@@ -177,17 +178,59 @@ class ToolRegistry:
 
     # --- Tool Implementations ---
 
-    def _exec_run_shell(self, command: str, timeout: int = 120) -> str:
-        """Execute a shell command with timeout."""
-        # Safety: block dangerous commands
-        dangerous = ["rm -rf /", "mkfs", "> /dev/sd", "dd if=/dev/zero"]
-        if any(d in command for d in dangerous):
-            return json.dumps({"error": "Blocked: dangerous command"})
+    def _resolve_workspace_path(self, path: str) -> Path:
+        """Resolve a user-supplied relative path and keep it inside the workspace."""
+        if path is None or not str(path).strip():
+            raise ValueError("Path cannot be empty")
+
+        requested = Path(path)
+        if requested.is_absolute():
+            raise ValueError("Path must be relative to workspace")
+
+        resolved = (self.workspace / requested).resolve(strict=False)
 
         try:
+            resolved.relative_to(self.workspace)
+        except ValueError as exc:
+            raise ValueError(f"Path escapes workspace: {path}") from exc
+
+        return resolved
+
+    def _parse_command(self, command: str) -> list[str]:
+        """Parse command text into argv without invoking a shell."""
+        if not command or not command.strip():
+            raise ValueError("Command cannot be empty")
+
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            raise ValueError(f"Invalid command syntax: {exc}") from exc
+
+        if not argv:
+            raise ValueError("Command cannot be empty")
+
+        dangerous_bins = {
+            "rm",
+            "sudo",
+            "su",
+            "mkfs",
+            "dd",
+            "shutdown",
+            "reboot",
+            "poweroff",
+            "halt",
+        }
+        if Path(argv[0]).name in dangerous_bins:
+            raise ValueError(f"Blocked executable: {argv[0]}")
+
+        return argv
+
+    def _exec_run_shell(self, command: str, timeout: int = 120) -> str:
+        """Execute a shell command with timeout."""
+        try:
+            argv = self._parse_command(command)
             result = subprocess.run(
-                command,
-                shell=True,
+                argv,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -207,17 +250,17 @@ class ToolRegistry:
         if gpu:
             env["CUDA_VISIBLE_DEVICES"] = gpu
 
-        log_path = self.workspace / log_file
+        argv = self._parse_command(command)
+        log_path = self._resolve_workspace_path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(log_path, "w") as f:
             proc = subprocess.Popen(
-                f"nohup {command}",
-                shell=True,
+                argv,
                 stdout=f,
                 stderr=subprocess.STDOUT,
                 env=env,
-                preexec_fn=os.setsid,
+                start_new_session=True,
                 cwd=str(self.workspace),
             )
 
@@ -228,14 +271,14 @@ class ToolRegistry:
         if Path(path).name in self._protected_files:
             return json.dumps({"error": f"Cannot overwrite protected file: {path}"})
 
-        file_path = self.workspace / path
+        file_path = self._resolve_workspace_path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content)
         return json.dumps({"status": "written", "path": str(file_path), "bytes": len(content)})
 
     def _exec_read_file(self, path: str) -> str:
         """Read file contents."""
-        file_path = self.workspace / path
+        file_path = self._resolve_workspace_path(path)
         if not file_path.exists():
             return json.dumps({"error": f"File not found: {path}"})
         content = file_path.read_text()
@@ -243,7 +286,7 @@ class ToolRegistry:
 
     def _exec_list_files(self, path: str = ".") -> str:
         """List directory contents."""
-        dir_path = self.workspace / path
+        dir_path = self._resolve_workspace_path(path)
         if not dir_path.is_dir():
             return json.dumps({"error": f"Not a directory: {path}"})
         files = sorted([f.name for f in dir_path.iterdir()])
