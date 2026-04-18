@@ -101,19 +101,43 @@ python -m core.loop --check
 
 ### Step 3: Choose Your LLM Provider
 
-Ask the user: "Do you want to use Claude (Anthropic) or Codex/GPT (OpenAI)?"
+Ask the user two questions:
 
-| Provider | Fast Model | Strong Model | Env Var |
-|----------|-----------|-------------|---------|
-| Anthropic | claude-sonnet-4-6 | claude-opus-4-6 | ANTHROPIC_API_KEY |
-| OpenAI | codex-5.3 | gpt-5.4 | OPENAI_API_KEY |
+1. **Which vendor?** — Anthropic (Claude) or OpenAI (Codex/GPT)?
+2. **API key or subscription?** — an existing Claude / ChatGPT subscription is
+   usually *much* cheaper than per-token API billing for 24/7 agent use.
 
-Default is Anthropic. To switch to OpenAI, edit `config.yaml`:
+| Provider value | Vendor | Billing | Auth |
+|----------------|--------|---------|------|
+| `anthropic` | Anthropic | Per-token API | `ANTHROPIC_API_KEY` env var |
+| `openai` | OpenAI | Per-token API | `OPENAI_API_KEY` env var |
+| `claude_cli` | Anthropic | **Flat-rate subscription** | `claude` CLI installed + logged in |
+| `codex_cli` | OpenAI | **Flat-rate subscription** | `codex` CLI installed + logged in |
+
+Model tiers:
+
+| Provider | Fast Model | Strong Model |
+|----------|-----------|-------------|
+| Anthropic (API or CLI) | claude-sonnet-4-6 | claude-opus-4-6 |
+| OpenAI (API or CLI) | codex-5.3 | gpt-5.4 |
+
+Default is `anthropic`. To switch, edit `config.yaml`:
 ```yaml
 agent:
-  provider: "openai"
-  model: "codex-5.3"
+  provider: "openai"            # or "anthropic" / "claude_cli" / "codex_cli"
+  model: "codex-5.3"            # or claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4
 ```
+
+**When to pick subscription (`claude_cli` / `codex_cli`):**
+- Running multiple agents in parallel (one subscription can power them all)
+- Heavy Think / Reflect usage where API tokens would add up
+- You already pay for a Claude or ChatGPT subscription and want to amortize it
+
+**Trade-off:** CLI mode has no native prompt caching and no structured tool-use
+protocol — the CLI is used as a text-in / text-out oracle. For this framework
+that is fine, because the Leader / Worker loop already sends one flat prompt per
+dispatch. For workloads that need fine-grained tool calls, stick to the API
+providers.
 
 ---
 

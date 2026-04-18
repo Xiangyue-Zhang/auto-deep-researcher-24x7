@@ -58,9 +58,20 @@ class AgentDispatcher:
         "gpt-5.4": "claude-opus-4-6",
     }
 
+    # Supported providers:
+    #   "anthropic"  — Anthropic SDK, per-token API billing (needs ANTHROPIC_API_KEY)
+    #   "openai"     — OpenAI SDK, per-token API billing (needs OPENAI_API_KEY)
+    #   "claude_cli" — `claude -p` subprocess, uses Claude Code / Pro / Max subscription
+    #   "codex_cli"  — `codex exec` subprocess, uses ChatGPT Plus / Pro subscription
+    SUPPORTED_PROVIDERS = ("anthropic", "openai", "claude_cli", "codex_cli")
+
     def __init__(self, model: str = "claude-sonnet-4-6", provider: str = "anthropic", max_steps: int = 3):
+        if provider not in self.SUPPORTED_PROVIDERS:
+            raise ValueError(
+                f"Unknown provider '{provider}'. Supported: {self.SUPPORTED_PROVIDERS}"
+            )
         self.model = model
-        self.provider = provider  # "anthropic" or "openai"
+        self.provider = provider
         self.max_steps = max_steps
         self._leader_history = []
 
@@ -134,16 +145,25 @@ class AgentDispatcher:
         self._leader_history = []
 
     def _call_llm(self, system: str, messages: list, tools: list = None, max_turns: int = 10) -> str:
-        """Call the LLM API. Supports both Anthropic (Claude) and OpenAI (Codex/GPT).
+        """Call the LLM. Four providers are supported.
 
-        Provider is determined by self.provider:
-        - "anthropic": Uses Claude API with prompt caching
-        - "openai": Uses OpenAI API (Codex 5.3 / GPT 5.4)
+        - "anthropic":  Claude SDK, per-token API billing
+        - "openai":     OpenAI SDK, per-token API billing
+        - "claude_cli": `claude -p` subprocess, uses Claude Code / Pro / Max subscription
+        - "codex_cli":  `codex exec` subprocess, uses ChatGPT Plus / Pro subscription
+
+        CLI providers let you reuse existing subscriptions instead of paying per-token,
+        which is much cheaper when running many agents in parallel or doing heavy
+        Think/Reflect cycles. Trade-off: no native prompt caching, no tool-use protocol —
+        the CLI is used as a plain text-in / text-out oracle.
         """
+        if self.provider == "claude_cli":
+            return self._call_claude_cli(system, messages)
+        if self.provider == "codex_cli":
+            return self._call_codex_cli(system, messages)
         if self.provider == "openai":
             return self._call_openai(system, messages)
-        else:
-            return self._call_anthropic(system, messages)
+        return self._call_anthropic(system, messages)
 
     def _call_anthropic(self, system: str, messages: list) -> str:
         """Call Anthropic Claude API."""
@@ -201,6 +221,96 @@ class AgentDispatcher:
         except ImportError:
             logger.warning("openai package not installed. Using mock response.")
             return json.dumps({"action": "wait", "reason": "LLM not available"})
+
+    @staticmethod
+    def _flatten_for_cli(system: str, messages: list) -> str:
+        """Serialize (system + chat history) into a single prompt for CLI subprocess.
+
+        The headless CLI tools (claude -p / codex exec) take one blob of text and
+        return the assistant reply. We rebuild the conversation using simple
+        section markers rather than a structured role schema — good enough for
+        single-turn dispatches, which is how the loop already uses the LLM.
+        """
+        parts = [f"===== SYSTEM =====\n{system.strip()}\n"]
+        for msg in messages:
+            role = str(msg.get("role", "user")).upper()
+            content = str(msg.get("content", "")).strip()
+            parts.append(f"===== {role} =====\n{content}\n")
+        parts.append("===== ASSISTANT =====\n")
+        return "\n".join(parts)
+
+    def _run_cli(self, argv: list, prompt: str, tool_label: str, install_hint: str,
+                 use_stdin: bool = False) -> str:
+        """Invoke a headless CLI tool and return its stdout as the assistant reply."""
+        import subprocess
+
+        try:
+            if use_stdin:
+                result = subprocess.run(
+                    argv,
+                    input=prompt,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                    check=False,
+                )
+            else:
+                result = subprocess.run(
+                    argv + [prompt],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                    check=False,
+                )
+        except FileNotFoundError:
+            logger.warning(
+                f"{tool_label} CLI not found on PATH. "
+                f"Install: {install_hint}. Falling back to mock response."
+            )
+            return json.dumps({"action": "wait", "reason": f"{tool_label} CLI missing"})
+        except subprocess.TimeoutExpired:
+            logger.error(f"{tool_label} CLI timed out after 600s")
+            return json.dumps({"action": "wait", "reason": f"{tool_label} CLI timeout"})
+        except OSError as e:
+            # argv too large (E2BIG) — retry via stdin
+            if not use_stdin and getattr(e, "errno", None) == 7:
+                logger.info(f"{tool_label} argv exceeded OS limit; retrying via stdin.")
+                return self._run_cli(argv, prompt, tool_label, install_hint, use_stdin=True)
+            raise
+
+        if result.returncode != 0:
+            stderr_tail = (result.stderr or "").strip().splitlines()[-5:]
+            logger.error(
+                f"{tool_label} CLI exited {result.returncode}. "
+                f"Stderr tail: {' | '.join(stderr_tail)}"
+            )
+            return json.dumps({"action": "wait", "reason": f"{tool_label} CLI error"})
+
+        return (result.stdout or "").strip()
+
+    def _call_claude_cli(self, system: str, messages: list) -> str:
+        """Headless dispatch via the `claude` CLI, billed against a Pro / Max subscription."""
+        prompt = self._flatten_for_cli(system, messages)
+        # claude -p reads the prompt from stdin when no argument is given,
+        # which avoids argv size limits for long memory contexts.
+        return self._run_cli(
+            argv=["claude", "-p", "--output-format", "text"],
+            prompt=prompt,
+            tool_label="claude",
+            install_hint="npm i -g @anthropic-ai/claude-code && run `claude` once to sign in",
+            use_stdin=True,
+        )
+
+    def _call_codex_cli(self, system: str, messages: list) -> str:
+        """Headless dispatch via the `codex` CLI, billed against a ChatGPT subscription."""
+        prompt = self._flatten_for_cli(system, messages)
+        return self._run_cli(
+            argv=["codex", "exec"],
+            prompt=prompt,
+            tool_label="codex",
+            install_hint="brew install codex (or see upstream project) then run `codex login`",
+            use_stdin=False,
+        )
 
     def _load_prompt(self, filename: str) -> str:
         """Load agent prompt from agents/ directory."""

@@ -37,6 +37,11 @@
 
 ## Recent Updates
 
+**2026-04-18**
+- Added two new `provider` modes that reuse existing flat-rate subscriptions instead of per-token API billing: `claude_cli` (via the local `claude -p` CLI) and `codex_cli` (via the local `codex exec` CLI). Much cheaper when running multiple 24/7 agents in parallel. See the updated *Supported LLM Providers* section for the full API-vs-subscription trade-off table.
+- Provider validation added at dispatcher construction; unknown provider values now fail fast with a clear error instead of silently falling through.
+- CLI subprocess path is defensive: missing binary, non-zero exit, and 10-min timeout all degrade to a structured wait-action reply rather than crashing the loop. Oversize prompts automatically fall back from argv to stdin.
+
 **2026-04-09**
 - Reduced token growth by resetting leader context between cycles.
 - Added a lightweight fallback to avoid repeated no-progress loops.
@@ -848,27 +853,50 @@ python install.py --uninstall
 
 ## Supported LLM Providers
 
-Works with **both Anthropic and OpenAI** out of the box. Pick your provider:
+Works with **both Anthropic and OpenAI** out of the box, and can run on a
+**flat-rate subscription** instead of per-token billing via the local CLIs.
 
 | Tier | Anthropic (Claude) | OpenAI (Codex/GPT) | Best For |
 |------|-------------------|-------------------|----------|
 | **Fast** | `claude-sonnet-4-6` | `codex-5.3` | Daily experiments, iteration |
 | **Strongest** | `claude-opus-4-6` | `gpt-5.4` | Complex reasoning, architecture decisions |
 
+### Authentication mode: API key vs. subscription
+
+| Mode | `provider` value | Billing | Requires |
+|------|------------------|---------|----------|
+| API — Anthropic | `anthropic` | Per-token, via `ANTHROPIC_API_KEY` | `pip install anthropic` |
+| API — OpenAI | `openai` | Per-token, via `OPENAI_API_KEY` | `pip install openai` |
+| **Subscription — Claude** | `claude_cli` | Flat-rate, uses your Claude Code / Pro / Max plan | `claude` CLI installed and logged in |
+| **Subscription — ChatGPT** | `codex_cli` | Flat-rate, uses your ChatGPT Plus / Pro plan | `codex` CLI installed and logged in |
+
+The `*_cli` modes shell out to the headless CLI (`claude -p` / `codex exec`) and
+share your existing subscription quota. This is much cheaper than per-token
+billing when you run multiple agents in parallel or do heavy Think/Reflect
+cycles. Trade-off: no native prompt caching or tool-use protocol — the CLI is
+used as a plain text-in / text-out oracle.
+
 Switch provider in `config.yaml`:
 ```yaml
 agent:
-  provider: "openai"       # or "anthropic"
-  model: "codex-5.3"       # or "claude-sonnet-4-6"
+  # Pay-per-token (needs API key):
+  provider: "anthropic"           # or "openai"
+  model: "claude-sonnet-4-6"      # or "codex-5.3"
+
+  # Flat-rate subscription (needs CLI login instead of API key):
+  # provider: "claude_cli"        # or "codex_cli"
 ```
 
-Or set via environment:
+Or set via environment (API-key modes only):
 ```bash
-# For Anthropic
+# For API-key "anthropic" provider:
 export ANTHROPIC_API_KEY="sk-ant-xxxxx"
 
-# For OpenAI
+# For API-key "openai" provider:
 export OPENAI_API_KEY="sk-xxxxx"
+
+# For subscription providers (claude_cli / codex_cli): no env var — just
+# install the CLI once and run `claude` or `codex login` to sign in.
 ```
 
 ---
