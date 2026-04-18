@@ -153,19 +153,39 @@ python -m core.loop --check
 
 ### Step 3: Choose Your LLM Provider
 
-Ask the user: "Do you want to use Claude (Anthropic) or Codex/GPT (OpenAI)?"
+Ask the user two questions:
 
-| Provider | Fast Model | Strong Model | Env Var |
-|----------|-----------|-------------|---------|
-| Anthropic | claude-sonnet-4-6 | claude-opus-4-6 | ANTHROPIC_API_KEY |
-| OpenAI | codex-5.3 | gpt-5.4 | OPENAI_API_KEY |
+1. **Which vendor?** — Anthropic (Claude) or OpenAI (Codex/GPT)?
+2. **API key or subscription?** — an existing Claude / ChatGPT subscription is
+   usually *much* cheaper than per-token API billing for 24/7 agent use.
 
-Default is Anthropic. To switch to OpenAI, edit `config.yaml`:
+| Provider value | Vendor | Billing | Auth |
+|----------------|--------|---------|------|
+| `anthropic` | Anthropic | Per-token API | `ANTHROPIC_API_KEY` env var |
+| `openai` | OpenAI | Per-token API | `OPENAI_API_KEY` env var |
+| `claude_cli` | Anthropic | **Flat-rate subscription** | `claude` CLI installed + logged in |
+| `codex_cli` | OpenAI | **Flat-rate subscription** | `codex` CLI installed + logged in |
+
+Model tiers:
+
+| Provider | Fast Model | Strong Model |
+|----------|-----------|-------------|
+| Anthropic (API or CLI) | claude-sonnet-4-6 | claude-opus-4-6 |
+| OpenAI (API or CLI) | codex-5.3 | gpt-5.4 |
+
+Default is `anthropic`. To switch, edit `config.yaml`:
 ```yaml
 agent:
-  provider: "openai"
-  model: "codex-5.3"
+  provider: "openai"            # or "anthropic" / "claude_cli" / "codex_cli"
+  model: "codex-5.3"            # or claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4
 ```
+
+**Subscription mode (`claude_cli` / `codex_cli`)** shells out to the headless
+CLI (`claude -p` / `codex exec`) and reuses the user's existing subscription
+quota instead of per-token billing. Much cheaper when running multiple agents
+in parallel. Trade-off: no native prompt caching and no structured tool-use
+protocol — used as a plain text-in / text-out oracle, which is fine for this
+framework's single-shot dispatch pattern.
 
 ---
 

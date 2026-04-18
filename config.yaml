@@ -7,12 +7,22 @@ project:
   workspace: "./workspace"
 
 agent:
-  # Provider: "anthropic" or "openai"
+  # Provider:
+  #   "anthropic"  — Anthropic SDK, per-token API billing (ANTHROPIC_API_KEY)
+  #   "openai"     — OpenAI SDK, per-token API billing (OPENAI_API_KEY)
+  #   "claude_cli" — `claude -p` subprocess, reuses Claude Code / Pro / Max subscription
+  #   "codex_cli"  — `codex exec` subprocess, reuses ChatGPT Plus / Pro subscription
+  #
+  # The *_cli options are much cheaper when running many agents in parallel,
+  # because they share your existing subscription quota instead of per-token billing.
+  # They require the corresponding CLI to be installed and logged in once on this host.
   provider: "anthropic"
 
   # Model selection per provider:
-  #   anthropic: claude-sonnet-4-6 (fast) | claude-opus-4-6 (strongest)
-  #   openai:    codex-5.3 (fast)         | gpt-5.4 (strongest)
+  #   anthropic:  claude-sonnet-4-6 (fast) | claude-opus-4-6 (strongest)
+  #   openai:     codex-5.3 (fast)         | gpt-5.4 (strongest)
+  #   claude_cli: whichever model your `claude` CLI is configured to use
+  #   codex_cli:  whichever model your `codex` CLI is configured to use
   model: "claude-sonnet-4-6"
 
   max_cycles: -1                  # -1 = run forever
