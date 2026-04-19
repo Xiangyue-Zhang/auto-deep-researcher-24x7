@@ -348,6 +348,33 @@ During training (90%+ of time), the agent does NOT call the LLM. It only does:
 - **Writing Agent**: generates reports (3 tools)
 - Only 1 worker active at a time, others cost $0
 
+### Tool-Use Protocol (provider-agnostic)
+
+Workers do not use each provider's native SDK tool-use protocol. Instead the
+framework injects a plain-text schema into the system prompt and the worker
+emits tool calls as `<tool_call>{...}</tool_call>` blocks. The dispatcher
+parses the blocks, runs each through `ToolRegistry.execute_tool`, and feeds
+results back as `<tool_result name="...">...</tool_result>` in the next user
+turn. The loop runs until the worker produces a response with no tool calls
+(the final answer) or `max_turns` is reached.
+
+Why this design:
+
+- **One protocol, four providers** — the Anthropic and OpenAI SDK paths use
+  the same text protocol as `claude_cli` and `codex_cli`. No per-provider
+  branching in the execution loop.
+- **Authoritative PID / log_file** — the EXECUTE → MONITOR handoff reads
+  `pid` and `log_file` directly from the `launch_experiment` tool's JSON
+  result, not from regex-scraping the model's prose.
+- **Provider-lock-down** — for `claude_cli` the framework passes
+  `--tools ""` so the CLI cannot bypass the protocol with its own built-in
+  tools. `codex_cli` has no equivalent flag and will silently ignore the
+  protocol; a runtime warning is emitted when it is used as a worker, and
+  users should pick one of the other three providers for worker dispatches.
+- **Fence stripping** — tool-call blocks inside triple-backtick code fences
+  are ignored, so a model's illustrative example in its prose is never
+  accidentally executed.
+
 ### Safety
 - Mandatory dry-run before every real training
 - Protected files can't be overwritten

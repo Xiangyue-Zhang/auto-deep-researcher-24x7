@@ -96,7 +96,45 @@ No LLM API calls until training completes.
 - 4 tools = 800 extra tokens per call
 - Over 100 API calls/day, that's 220K tokens saved
 
-### 6. GPU Utilities (`gpu/`)
+### 6. Tool-Use Protocol (`core/agents.py::dispatch_worker`)
+
+Workers drive tool calls through a provider-agnostic text protocol rather
+than each SDK's native tool-use API:
+
+1. The dispatcher renders the worker's tool schemas as a plain-text
+   `## Tool-Use Protocol` section and appends it to the system prompt.
+2. The worker emits zero or more `<tool_call>{"name": "...", "args": {...}}</tool_call>`
+   blocks in its response.
+3. For each block, the dispatcher calls `ToolRegistry.execute_tool` and
+   packages the JSON result into a `<tool_result name="...">...</tool_result>`
+   block appended to the next user turn.
+4. The loop iterates until the worker returns a message with no tool calls
+   (the final answer) or `max_turns` is reached.
+
+Design rationale:
+
+- **Uniform behaviour across four providers.** The same protocol works
+  whether the LLM is reached via the Anthropic SDK, the OpenAI SDK, the
+  `claude` CLI, or the `codex` CLI. The execution loop contains no
+  per-provider branching.
+- **Authoritative experiment hand-off.** `pid` and `log_file` flow from
+  the `launch_experiment` tool result (structured JSON) to
+  `_parse_worker_response`, which promotes them onto the top-level result
+  dict read by `loop._monitor_experiment`. Regex-on-prose remains as a
+  fallback only.
+- **CLI lock-down.** `claude_cli` is invoked with `--tools ""` so the
+  Claude Code CLI cannot bypass the protocol using its built-in tools.
+  `codex_cli` has no equivalent flag, so it may silently act on its own;
+  `dispatch_worker` logs a warning when `codex_cli` is used as a worker
+  provider, and the README compatibility table flags it accordingly.
+- **Fence stripping.** Tool-call blocks inside triple-backtick code fences
+  are removed before parsing so that models illustrating the protocol in
+  their prose do not trigger real side-effectful tool execution.
+- **Bounded execution.** `max_turns` is configured per-worker
+  (`idea=12`, `code=40`, `writing=30`); on overflow the loop exits cleanly
+  and the last response is returned with a warning.
+
+### 7. GPU Utilities (`gpu/`)
 
 - **detect.py**: Auto-detect GPUs, check availability, reserve last GPU
 - **keeper.py**: Keep cloud instances alive with minimal GPU activity

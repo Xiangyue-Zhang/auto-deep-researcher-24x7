@@ -6,10 +6,20 @@ Leader-Worker architecture for efficient token usage:
 - Workers: Specialized agents (idea/code/writing), spawned on demand
 
 Only ONE worker runs at a time. Others idle at zero token cost.
+
+Tool use is implemented via a provider-agnostic text protocol. The LLM
+emits <tool_call>{...}</tool_call> blocks, the dispatcher executes each
+call through the ToolRegistry, and results are fed back as
+<tool_result name="...">...</tool_result> blocks in the next user turn.
+The loop runs until the worker produces a response with no tool calls
+(the final answer) or max_turns is exceeded. This works uniformly
+across all four providers — the API SDKs don't use their native
+tool-use protocol, and the CLI providers are simply text oracles.
 """
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -18,6 +28,14 @@ logger = logging.getLogger("autoresearcher.agents")
 
 # Agent definitions directory
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
+
+
+# Tool-use text protocol
+_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+# Triple-backtick fenced blocks are stripped before parsing so that LLMs can
+# illustrate the protocol inside code fences without triggering real tool
+# execution. Matches ``` with an optional language tag through the next ```.
+_FENCED_BLOCK_RE = re.compile(r"```[^\n]*\n.*?```", re.DOTALL)
 
 
 class AgentDispatcher:
@@ -96,47 +114,109 @@ class AgentDispatcher:
             "content": self._format_leader_input(task, context),
         })
 
-        response = self._call_llm(
-            system=system_prompt,
-            messages=messages,
-            max_turns=10,
-        )
+        response = self._call_llm(system=system_prompt, messages=messages)
 
         # Persist conversation for within-cycle coherence
         self._leader_history = messages + [{"role": "assistant", "content": response}]
 
         return self._parse_leader_response(response)
 
-    def dispatch_worker(self, agent_type: str, task: str, tools: list) -> dict:
-        """Dispatch a task to a worker agent.
+    def dispatch_worker(self, agent_type: str, task: str, tool_registry) -> dict:
+        """Dispatch a task to a worker agent and run its tool-use loop.
 
-        Workers are stateless — each dispatch is independent.
-        This keeps token costs predictable.
+        Workers are stateless across dispatches — each call starts with a
+        fresh conversation. Within a single dispatch the conversation is
+        multi-turn: the worker may emit tool calls, receive results, and
+        continue reasoning until it produces a final answer (a response
+        containing no <tool_call> blocks).
 
         Args:
-            agent_type: "idea", "code", or "writing"
-            task: Task description from the Leader
-            tools: Tool definitions to provide
+            agent_type: "idea", "code", or "writing".
+            task: Task description from the Leader.
+            tool_registry: ToolRegistry that provides `get_tools_for` and
+                `execute_tool`. The registry itself is passed in so this
+                module does not have a hard import dependency on tools.py.
 
         Returns:
-            Worker's result as a dict
+            Dict with at minimum `agent` and `response`. If the worker
+            called `launch_experiment`, the PID and log_file from that
+            tool result are also surfaced at the top level so the loop's
+            EXECUTE → MONITOR handoff keeps working.
         """
         if agent_type not in self.WORKER_CONFIGS:
             raise ValueError(f"Unknown agent type: {agent_type}")
+        if tool_registry is None:
+            raise TypeError(
+                "dispatch_worker requires a tool_registry with "
+                "`get_tools_for(agent_type)` and `execute_tool(name, args)` "
+                "methods. Pass a ToolRegistry configured with an empty tool "
+                "list if you want a tool-less worker."
+            )
 
         config = self.WORKER_CONFIGS[agent_type]
-        system_prompt = self._load_prompt(config["prompt_file"])
+        base_prompt = self._load_prompt(config["prompt_file"])
+        tool_defs = tool_registry.get_tools_for(agent_type)
+        system_prompt = base_prompt + "\n\n" + self._render_tools_section(tool_defs)
+        max_turns = config["max_turns"]
+
+        # codex_cli hard-codes its own agentic tool loop; it will ignore the
+        # <tool_call> protocol and silently act on its own. That breaks the
+        # EXECUTE → MONITOR handoff (no PID, no log_file from ToolRegistry).
+        # Leader/think dispatches are fine (they do not use tools) but worker
+        # dispatches will likely return a non-authoritative summary. Warn once
+        # per dispatch so users see it in the log without it becoming noise.
+        if self.provider == "codex_cli" and tool_defs:
+            logger.warning(
+                "codex_cli is being used as a worker provider; its CLI does "
+                "not support disabling built-in tools, so it may bypass the "
+                "ToolRegistry and the resulting PID/log_file cannot be "
+                "recovered. For worker dispatches prefer claude_cli, "
+                "anthropic, or openai."
+            )
 
         logger.info(f"Dispatching {agent_type} agent: {task[:100]}...")
 
-        response = self._call_llm(
-            system=system_prompt,
-            messages=[{"role": "user", "content": task}],
-            tools=tools,
-            max_turns=config["max_turns"],
-        )
+        messages = [{"role": "user", "content": task}]
+        last_response = ""
+        tool_results_log: list[dict] = []
 
-        result = self._parse_worker_response(response, agent_type)
+        for turn in range(1, max_turns + 1):
+            last_response = self._call_llm(system=system_prompt, messages=messages)
+
+            tool_calls = self._parse_tool_calls(last_response)
+            if not tool_calls:
+                # No tool calls → worker has produced its final answer.
+                break
+
+            # Echo the assistant turn so the next LLM call sees the history.
+            messages.append({"role": "assistant", "content": last_response})
+
+            # Execute each call and build a single user turn with all results.
+            result_blocks = []
+            for call in tool_calls:
+                name = call.get("name", "")
+                args = call.get("args", {}) or {}
+                if not isinstance(args, dict):
+                    tool_output = json.dumps({"error": "`args` must be a JSON object"})
+                else:
+                    tool_output = tool_registry.execute_tool(name, args)
+                tool_results_log.append({"name": name, "args": args, "output": tool_output})
+                result_blocks.append(
+                    f'<tool_result name="{name}">\n{tool_output}\n</tool_result>'
+                )
+
+            messages.append({
+                "role": "user",
+                "content": "\n\n".join(result_blocks),
+            })
+        else:
+            # for/else: executed only when the loop exhausts max_turns without break.
+            logger.warning(
+                f"Worker {agent_type} hit max_turns={max_turns} "
+                f"with tool calls still pending; returning last response."
+            )
+
+        result = self._parse_worker_response(last_response, agent_type, tool_results_log)
         logger.info(f"Worker {agent_type} completed: {str(result)[:200]}")
         return result
 
@@ -144,7 +224,88 @@ class AgentDispatcher:
         """Clear leader conversation history between cycles."""
         self._leader_history = []
 
-    def _call_llm(self, system: str, messages: list, tools: list = None, max_turns: int = 10) -> str:
+    @staticmethod
+    def _parse_tool_calls(text: str) -> list[dict]:
+        """Extract <tool_call>{...}</tool_call> blocks from an LLM response.
+
+        Silently skips blocks whose JSON body is malformed. An empty list
+        means the response is a final answer (no tool calls requested).
+
+        Tool-call blocks inside triple-backtick code fences are deliberately
+        ignored: LLMs routinely illustrate the protocol inside fenced blocks
+        when explaining what they are about to do, and executing those
+        illustrations as real side-effectful calls has caused accidental
+        writes in practice.
+        """
+        stripped = _FENCED_BLOCK_RE.sub("", text or "")
+        calls: list[dict] = []
+        for match in _TOOL_CALL_RE.finditer(stripped):
+            body = match.group(1)
+            try:
+                parsed = json.loads(body)
+            except json.JSONDecodeError as exc:
+                logger.warning(f"Skipping malformed tool_call block: {exc}")
+                continue
+            if isinstance(parsed, dict) and parsed.get("name"):
+                calls.append(parsed)
+            else:
+                logger.warning(
+                    "Skipping tool_call without a string `name` field: "
+                    f"{str(parsed)[:120]}"
+                )
+        return calls
+
+    @staticmethod
+    def _render_tools_section(tool_defs: list[dict]) -> str:
+        """Render tool schemas as a plain-text block appended to the system prompt.
+
+        The worker's own prompt already has a short 'Tools Available' list;
+        this auto-generated section provides the exact machine-readable
+        schemas and protocol instructions so the LLM emits calls in the
+        format the dispatcher can parse.
+        """
+        if not tool_defs:
+            return ""
+
+        lines = [
+            "## Tool-Use Protocol",
+            "",
+            "You have NO direct access to the filesystem, shell, or network.",
+            "To act on the environment you MUST emit `<tool_call>` blocks and",
+            "wait for the framework to return `<tool_result>` blocks in the",
+            "next user turn. Example:",
+            "",
+            "    <tool_call>",
+            '    {"name": "read_file", "args": {"path": "config.yaml"}}',
+            "    </tool_call>",
+            "",
+            "You may emit multiple `<tool_call>` blocks in one message; each",
+            "will be executed and its result returned. When you are finished,",
+            "produce a plain-text message with NO `<tool_call>` blocks — that",
+            "is how the framework knows you are done.",
+            "",
+            "Emit `<tool_call>` blocks at the top level of the message. Do NOT",
+            "wrap them in triple-backtick code fences — fenced blocks are",
+            "treated as illustration, not as real calls.",
+            "",
+            "### Available tools",
+            "",
+        ]
+        for tool in tool_defs:
+            name = tool.get("name", "<unnamed>")
+            desc = tool.get("description", "")
+            schema = tool.get("input_schema", {})
+            lines.append(f"- `{name}` — {desc}")
+            props = schema.get("properties", {}) or {}
+            required = set(schema.get("required", []) or [])
+            for pname, pspec in props.items():
+                ptype = pspec.get("type", "any")
+                pdesc = pspec.get("description", "")
+                flag = "required" if pname in required else "optional"
+                lines.append(f"    - `{pname}` ({ptype}, {flag}): {pdesc}")
+        return "\n".join(lines)
+
+    def _call_llm(self, system: str, messages: list) -> str:
         """Call the LLM. Four providers are supported.
 
         - "anthropic":  Claude SDK, per-token API billing
@@ -154,8 +315,9 @@ class AgentDispatcher:
 
         CLI providers let you reuse existing subscriptions instead of paying per-token,
         which is much cheaper when running many agents in parallel or doing heavy
-        Think/Reflect cycles. Trade-off: no native prompt caching, no tool-use protocol —
-        the CLI is used as a plain text-in / text-out oracle.
+        Think/Reflect cycles. Trade-off: no native prompt caching, no native tool-use
+        protocol — the LLM is driven purely as a text-in / text-out oracle, and tool
+        use is layered on top via the <tool_call> text protocol (see dispatch_worker).
         """
         if self.provider == "claude_cli":
             return self._call_claude_cli(system, messages)
@@ -289,12 +451,20 @@ class AgentDispatcher:
         return (result.stdout or "").strip()
 
     def _call_claude_cli(self, system: str, messages: list) -> str:
-        """Headless dispatch via the `claude` CLI, billed against a Pro / Max subscription."""
+        """Headless dispatch via the `claude` CLI, billed against a Pro / Max subscription.
+
+        `--tools ""` disables every built-in tool so the CLI degrades to a
+        pure text oracle. This is required for our <tool_call> protocol
+        to work: the CLI must be unable to act on its own, otherwise it
+        will bypass our ToolRegistry (and the loop loses visibility over
+        what actually happened, especially for launch_experiment PIDs).
+
+        The prompt is piped via stdin to sidestep argv-size limits on
+        large conversation histories.
+        """
         prompt = self._flatten_for_cli(system, messages)
-        # claude -p reads the prompt from stdin when no argument is given,
-        # which avoids argv size limits for long memory contexts.
         return self._run_cli(
-            argv=["claude", "-p", "--output-format", "text"],
+            argv=["claude", "-p", "--output-format", "text", "--tools", ""],
             prompt=prompt,
             tool_label="claude",
             install_hint="npm i -g @anthropic-ai/claude-code && run `claude` once to sign in",
@@ -302,15 +472,74 @@ class AgentDispatcher:
         )
 
     def _call_codex_cli(self, system: str, messages: list) -> str:
-        """Headless dispatch via the `codex` CLI, billed against a ChatGPT subscription."""
+        """Headless dispatch via the `codex` CLI, billed against a ChatGPT subscription.
+
+        Unlike `claude -p`, `codex exec` is fully agentic by default — it runs
+        its own internal tool-use loop and there is no CLI flag to disable
+        the built-in tools. That means the framework's <tool_call> protocol
+        is unreliable under this provider: codex will often act on its own
+        and return a final summary. Workers that need to launch experiments
+        (and recover a PID from the ToolRegistry) should therefore prefer
+        claude_cli / anthropic / openai; codex_cli is best kept for the
+        leader/think path where we only need free-text output.
+
+        Flags:
+          - `-o <tempfile>`       captures only the final assistant message
+                                  instead of the full agentic trace,
+          - `--skip-git-repo-check` allows codex to run in arbitrary dirs
+                                    (the workspace is typically not a repo).
+        """
+        import subprocess
+        import tempfile
+
         prompt = self._flatten_for_cli(system, messages)
-        return self._run_cli(
-            argv=["codex", "exec"],
-            prompt=prompt,
-            tool_label="codex",
-            install_hint="brew install codex (or see upstream project) then run `codex login`",
-            use_stdin=False,
-        )
+
+        try:
+            with tempfile.NamedTemporaryFile("w+", suffix=".txt", delete=False) as out:
+                out_path = out.name
+            try:
+                result = subprocess.run(
+                    [
+                        "codex", "exec",
+                        "--skip-git-repo-check",
+                        "-o", out_path,
+                        prompt,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                    check=False,
+                )
+            except FileNotFoundError:
+                logger.warning(
+                    "codex CLI not found on PATH. "
+                    "Install: brew install codex (or see upstream) then `codex login`. "
+                    "Falling back to mock response."
+                )
+                return json.dumps({"action": "wait", "reason": "codex CLI missing"})
+            except subprocess.TimeoutExpired:
+                logger.error("codex CLI timed out after 600s")
+                return json.dumps({"action": "wait", "reason": "codex CLI timeout"})
+
+            if result.returncode != 0:
+                stderr_tail = (result.stderr or "").strip().splitlines()[-5:]
+                logger.error(
+                    f"codex CLI exited {result.returncode}. "
+                    f"Stderr tail: {' | '.join(stderr_tail)}"
+                )
+                return json.dumps({"action": "wait", "reason": "codex CLI error"})
+
+            try:
+                with open(out_path, "r") as f:
+                    return f.read().strip()
+            except OSError:
+                # Fall back to stdout if --output-last-message didn't produce a file.
+                return (result.stdout or "").strip()
+        finally:
+            try:
+                Path(out_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _load_prompt(self, filename: str) -> str:
         """Load agent prompt from agents/ directory."""
@@ -358,16 +587,42 @@ class AgentDispatcher:
             "task": response,
         }
 
-    def _parse_worker_response(self, response: str, agent_type: str) -> dict:
-        """Parse worker response into structured result."""
-        result = {"agent": agent_type, "response": response}
+    def _parse_worker_response(self, response: str, agent_type: str,
+                               tool_results: Optional[list] = None) -> dict:
+        """Parse worker response into a structured result dict.
 
-        # Check for experiment launch indicators
+        When the worker used the `launch_experiment` tool, the PID and
+        log_file come directly from that tool's JSON result — this is
+        authoritative. The regex-on-free-text path is retained as a
+        fallback for responses that report an experiment launch purely
+        in prose (or for older prompts that predate the tool-use loop).
+        """
+        result = {"agent": agent_type, "response": response}
+        if tool_results:
+            result["tool_calls"] = len(tool_results)
+
         if agent_type == "code":
-            if "PID" in response or "launched" in response.lower():
+            # Prefer authoritative tool-result data over text parsing.
+            launch_result = None
+            if tool_results:
+                for entry in reversed(tool_results):
+                    if entry.get("name") == "launch_experiment":
+                        launch_result = entry
+                        break
+            if launch_result is not None:
+                try:
+                    payload = json.loads(launch_result.get("output", "{}"))
+                except (json.JSONDecodeError, TypeError):
+                    payload = {}
+                if isinstance(payload, dict) and payload.get("pid") is not None:
+                    result["experiment_launched"] = True
+                    result["pid"] = int(payload["pid"])
+                    if payload.get("log_file"):
+                        result["log_file"] = payload["log_file"]
+
+            # Fallback: scrape PID from free-text response.
+            if "pid" not in result and ("PID" in response or "launched" in response.lower()):
                 result["experiment_launched"] = True
-                # Try to extract PID
-                import re
                 pid_match = re.search(r"PID[=:\s]+(\d+)", response)
                 if pid_match:
                     result["pid"] = int(pid_match.group(1))
