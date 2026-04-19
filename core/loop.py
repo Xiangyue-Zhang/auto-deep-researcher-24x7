@@ -208,7 +208,7 @@ class ResearchLoop:
         result = self.dispatcher.dispatch_worker(
             agent_type=agent_type,
             task=task_description,
-            tools=self.tools.get_tools_for(agent_type),
+            tool_registry=self.tools,
         )
 
         return result

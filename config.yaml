@@ -8,14 +8,23 @@ project:
 
 agent:
   # Provider:
-  #   "anthropic"  — Anthropic SDK, per-token API billing (ANTHROPIC_API_KEY)
-  #   "openai"     — OpenAI SDK, per-token API billing (OPENAI_API_KEY)
-  #   "claude_cli" — `claude -p` subprocess, reuses Claude Code / Pro / Max subscription
-  #   "codex_cli"  — `codex exec` subprocess, reuses ChatGPT Plus / Pro subscription
+  #   "anthropic"  — SDK, per-token API billing (ANTHROPIC_API_KEY)
+  #   "openai"     — SDK, per-token API billing (OPENAI_API_KEY)
+  #   "claude_cli" — subprocess, reuses Claude Code / Pro / Max subscription
+  #   "codex_cli"  — subprocess, reuses ChatGPT Plus / Pro subscription
   #
-  # The *_cli options are much cheaper when running many agents in parallel,
-  # because they share your existing subscription quota instead of per-token billing.
-  # They require the corresponding CLI to be installed and logged in once on this host.
+  # The *_cli options are much cheaper when running many agents in parallel
+  # because they share your existing subscription quota instead of per-token
+  # billing. They require the corresponding CLI to be installed and logged
+  # in once on this host.
+  #
+  # Tool-use compatibility: the worker path drives tools through a text-based
+  # <tool_call> protocol. Compatible providers: "anthropic", "openai",
+  # "claude_cli" (we force `--tools ""` so the CLI cannot bypass it).
+  # "codex_cli" cannot be forced into pure-text mode by any current CLI flag,
+  # so it will silently bypass the ToolRegistry and lose PID tracking. Use it
+  # for the leader/think path only; keep one of the three other providers for
+  # worker dispatches.
   provider: "anthropic"
 
   # Model selection per provider:

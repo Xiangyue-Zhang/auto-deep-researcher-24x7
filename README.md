@@ -37,6 +37,14 @@
 
 ## Recent Updates
 
+**2026-04-19**
+- Workers now execute tools through a real multi-turn tool-use loop. The dispatcher injects the tool schema into the system prompt, parses `<tool_call>` blocks from the LLM response, runs each through `ToolRegistry.execute_tool`, feeds results back as `<tool_result>` in the next turn, and iterates until the worker produces a response with no tool calls or `max_turns` is hit. Previously the `tools` argument was accepted and silently dropped, and worker output was regex-scraped for PIDs — closes the gap raised in issue #13.
+- `launch_experiment` PIDs and log file paths are now surfaced directly from the tool result (authoritative), with the old free-text regex retained only as a fallback for pre-protocol responses.
+- `claude_cli` is forced into pure-text mode via `claude -p --tools ""`, so its responses reliably go through the framework's protocol.
+- `codex_cli` cannot be forced into pure-text mode by any current flag; when used as a worker provider the framework now emits a clear warning (see the updated compatibility table in *Supported LLM Providers*).
+- Tool-call blocks inside triple-backtick code fences are stripped before parsing, so illustrative examples in the LLM's prose are no longer accidentally executed.
+- Dead parameters (`tools`, `max_turns`) removed from `_call_llm`. They were never forwarded to the SDK; this aligns the code with what it actually does.
+
 **2026-04-18**
 - Added two new `provider` modes that reuse existing flat-rate subscriptions instead of per-token API billing: `claude_cli` (via the local `claude -p` CLI) and `codex_cli` (via the local `codex exec` CLI). Much cheaper when running multiple 24/7 agents in parallel. See the updated *Supported LLM Providers* section for the full API-vs-subscription trade-off table.
 - Provider validation added at dispatcher construction; unknown provider values now fail fast with a clear error instead of silently falling through.
@@ -863,18 +871,21 @@ Works with **both Anthropic and OpenAI** out of the box, and can run on a
 
 ### Authentication mode: API key vs. subscription
 
-| Mode | `provider` value | Billing | Requires |
-|------|------------------|---------|----------|
-| API — Anthropic | `anthropic` | Per-token, via `ANTHROPIC_API_KEY` | `pip install anthropic` |
-| API — OpenAI | `openai` | Per-token, via `OPENAI_API_KEY` | `pip install openai` |
-| **Subscription — Claude** | `claude_cli` | Flat-rate, uses your Claude Code / Pro / Max plan | `claude` CLI installed and logged in |
-| **Subscription — ChatGPT** | `codex_cli` | Flat-rate, uses your ChatGPT Plus / Pro plan | `codex` CLI installed and logged in |
+| Mode | `provider` value | Billing | Requires | Tool-use support |
+|------|------------------|---------|----------|------------------|
+| API — Anthropic | `anthropic` | Per-token, via `ANTHROPIC_API_KEY` | `pip install anthropic` | ✅ Full |
+| API — OpenAI | `openai` | Per-token, via `OPENAI_API_KEY` | `pip install openai` | ✅ Full |
+| **Subscription — Claude** | `claude_cli` | Flat-rate, uses your Claude Code / Pro / Max plan | `claude` CLI installed and logged in | ✅ Full |
+| **Subscription — ChatGPT** | `codex_cli` | Flat-rate, uses your ChatGPT Plus / Pro plan | `codex` CLI installed and logged in | ⚠️ Leader only |
 
-The `*_cli` modes shell out to the headless CLI (`claude -p` / `codex exec`) and
-share your existing subscription quota. This is much cheaper than per-token
-billing when you run multiple agents in parallel or do heavy Think/Reflect
-cycles. Trade-off: no native prompt caching or tool-use protocol — the CLI is
-used as a plain text-in / text-out oracle.
+Tool execution is driven by a text-based `<tool_call>` protocol injected
+into the worker's system prompt. All three "Full" providers can be forced
+into pure text-oracle mode so they honor the protocol (for `claude_cli`
+the framework passes `--tools ""` to disable built-in CLI tools). The
+`codex` CLI currently offers no equivalent flag — its internal agentic
+loop will bypass the protocol and the framework cannot recover PIDs from
+experiments it launches. Use `codex_cli` only for the leader/think path
+where no tools are needed.
 
 Switch provider in `config.yaml`:
 ```yaml
