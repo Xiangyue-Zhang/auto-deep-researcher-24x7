@@ -76,6 +76,21 @@ experiment:
   mandatory_dry_run: true
 ```
 
+Optional remote execution over SSH:
+
+```yaml
+execution:
+  mode: "ssh"
+  ssh_host: "user@server"
+  remote_workspace: "/home/user/my_project/workspace"
+  remote_python: "python3"
+```
+
+In SSH mode, the controller state stays local (`PROJECT_BRIEF.md`,
+`workspace/MEMORY_LOG.md`, `workspace/HUMAN_DIRECTIVE.md`, `state.json`),
+while code edits, shell commands, training, log tailing, PID checks, and GPU
+queries run on the configured remote host.
+
 ## Workflow Details
 
 ### Phase 1: THINK
@@ -91,9 +106,9 @@ experiment:
 - **Mandatory dry-run** (2-step verify, abort if fails)
 - Launch training via `nohup`, capture PID
 - Enter zero-cost monitoring loop:
-  - `kill -0 $PID` — is process alive?
-  - `nvidia-smi` — GPU utilization
-  - `tail -50 logfile` — latest training output
+  - backend PID check — is process alive?
+  - backend `nvidia-smi` — GPU utilization
+  - backend `tail -50 logfile` — latest training output
   - **Zero LLM API calls during this phase**
 
 ### Phase 3: REFLECT

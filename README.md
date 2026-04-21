@@ -914,11 +914,41 @@ export OPENAI_API_KEY="sk-xxxxx"
 
 ## Configuration
 
+By default, everything runs locally inside `project.workspace`. If you want
+to keep the controller on your laptop but run code, training, logs, and GPU
+checks on one remote server, enable the optional SSH execution mode:
+
+```yaml
+execution:
+  mode: "ssh"
+  ssh_host: "user@your-server"
+  remote_workspace: "/home/user/my_project/workspace"
+  remote_python: "python3"
+  ssh_args: []                    # optional, e.g. ["-p", "2222"]
+```
+
+In SSH mode, controller state still stays local:
+- `PROJECT_BRIEF.md`
+- `workspace/MEMORY_LOG.md`
+- `workspace/state.json`
+- `workspace/HUMAN_DIRECTIVE.md`
+- local progress / Obsidian exports
+
+The remote host only handles the tool-visible workspace, training process,
+training logs, PID checks, and `nvidia-smi`.
+
 ```yaml
 # config.yaml
 project:
   name: "my-research"
   brief: "PROJECT_BRIEF.md"
+
+execution:
+  mode: "local"                  # or "ssh"
+  ssh_host: ""                   # required in ssh mode
+  remote_workspace: ""           # required in ssh mode
+  remote_python: "python3"
+  ssh_args: []
 
 agent:
   provider: "anthropic"           # "anthropic" or "openai"
@@ -971,6 +1001,7 @@ experiment:
 auto-deep-researcher-24x7/
 ├── core/                    # Autonomous experiment loop engine
 │   ├── loop.py              # THINK → EXECUTE → REFLECT cycle
+│   ├── execution.py         # Local / SSH execution backends
 │   ├── memory.py            # Two-Tier constant-size memory
 │   ├── monitor.py           # Zero-LLM experiment monitoring
 │   ├── agents.py            # Leader-Worker agent dispatch

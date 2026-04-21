@@ -10,26 +10,32 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
+from .execution import ExecutionBackend, LocalExecutionBackend, build_execution_backend
 from .memory import MemoryManager
 
 
 class ObsidianExporter:
     """Project-level Obsidian Markdown exporter."""
 
-    def __init__(self, config: dict, project_dir: str | Path):
+    def __init__(
+        self,
+        config: dict,
+        project_dir: str | Path,
+        backend: Optional[ExecutionBackend] = None,
+    ):
         self.config = config or {}
         self.project_dir = Path(project_dir).resolve()
         self.project_name = self.project_dir.name
         self.workspace = self.project_dir / self.config.get("project", {}).get("workspace", "workspace")
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.state_path = self.workspace / "state.json"
+        self.backend = backend or LocalExecutionBackend(self.workspace)
 
         self.obsidian_config = self.config.get("obsidian", {})
         self.enabled = bool(self.obsidian_config.get("enabled", False))
@@ -142,18 +148,20 @@ class ObsidianExporter:
     def _read_log_tail(self, log_file: str, lines: int = 8) -> str:
         if not log_file:
             return ""
-        path = Path(log_file)
-        if not path.exists():
-            return ""
-        return "\n".join(path.read_text().splitlines()[-lines:])
+        try:
+            return "\n".join(self.backend.tail_file(log_file, lines=lines))
+        except Exception:
+            path = Path(log_file)
+            if path.is_absolute() and path.exists():
+                return "\n".join(path.read_text().splitlines()[-lines:])
+        return ""
 
     def _pid_alive(self, pid: Optional[int]) -> bool:
         if not pid:
             return False
         try:
-            os.kill(int(pid), 0)
-            return True
-        except OSError:
+            return self.backend.is_process_alive(int(pid))
+        except Exception:
             return False
 
     def _format_status(self, state: dict) -> str:
@@ -282,7 +290,11 @@ def main():
         milestone_max=config.get("memory", {}).get("milestone_max_chars", 1200),
         max_recent=config.get("memory", {}).get("max_recent_entries", 15),
     )
-    exporter = ObsidianExporter(config=config, project_dir=project_dir)
+    backend = build_execution_backend(
+        config=config,
+        controller_workspace=project_dir / config.get("project", {}).get("workspace", "workspace"),
+    )
+    exporter = ObsidianExporter(config=config, project_dir=project_dir, backend=backend)
     cycle_path = project_dir / config.get("project", {}).get("workspace", "workspace") / ".cycle_counter"
     cycle_count = int(cycle_path.read_text().strip()) if cycle_path.exists() else 0
 

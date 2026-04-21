@@ -1,20 +1,35 @@
-import importlib.util
 import json
 import tempfile
 import unittest
 from pathlib import Path
 
-
-def load_tool_registry():
-    module_path = Path(__file__).resolve().parents[1] / "core" / "tools.py"
-    spec = importlib.util.spec_from_file_location("core.tools", module_path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module.ToolRegistry
+from core.execution import LocalExecutionBackend
+from core.tools import ToolRegistry
 
 
-ToolRegistry = load_tool_registry()
+class RecordingBackend:
+    def __init__(self):
+        self.calls = []
+
+    def read_file(self, path):
+        self.calls.append(("read_file", path))
+        return ""
+
+    def write_file(self, path, content):
+        self.calls.append(("write_file", path, content))
+        return {"status": "written"}
+
+    def list_files(self, path="."):
+        self.calls.append(("list_files", path))
+        return []
+
+    def run_command(self, argv, timeout=120, env=None):
+        self.calls.append(("run_command", argv, timeout, env))
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    def launch_command(self, argv, log_file, env=None):
+        self.calls.append(("launch_command", argv, log_file, env))
+        return {"pid": 1, "log_file": log_file, "status": "launched"}
 
 
 class ToolRegistrySecurityTests(unittest.TestCase):
@@ -22,7 +37,7 @@ class ToolRegistrySecurityTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.workspace = Path(self.tempdir.name) / "workspace"
         self.workspace.mkdir()
-        self.registry = ToolRegistry(self.workspace)
+        self.registry = ToolRegistry(LocalExecutionBackend(self.workspace))
 
     def tearDown(self):
         self.tempdir.cleanup()
@@ -36,9 +51,12 @@ class ToolRegistrySecurityTests(unittest.TestCase):
         self.assertFalse((self.workspace.parent / "escape.txt").exists())
 
     def test_read_file_rejects_absolute_path(self):
-        result = json.loads(self.registry.execute_tool("read_file", {"path": "/etc/hosts"}))
+        backend = RecordingBackend()
+        registry = ToolRegistry(backend)
+        result = json.loads(registry.execute_tool("read_file", {"path": "/etc/hosts"}))
         self.assertIn("error", result)
         self.assertIn("relative to workspace", result["error"])
+        self.assertEqual(backend.calls, [])
 
     def test_list_files_rejects_parent_escape(self):
         result = json.loads(self.registry.execute_tool("list_files", {"path": ".."}))

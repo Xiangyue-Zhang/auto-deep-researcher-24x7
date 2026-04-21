@@ -82,13 +82,28 @@ The main orchestrator. Runs the THINK → EXECUTE → REFLECT cycle indefinitely
 ### 4. Experiment Monitor (`core/monitor.py`)
 
 **The zero-cost innovation.** During training:
-- `os.kill(pid, 0)` — is process alive? (zero cost)
-- `nvidia-smi` — GPU utilization (zero cost)
-- File tail read — last log lines (zero cost)
+- backend PID check — is process alive? (zero cost)
+- backend GPU query — `nvidia-smi` when available (zero cost)
+- backend file tail — last log lines (zero cost)
 
 No LLM API calls until training completes.
 
-### 5. Tool Registry (`core/tools.py`)
+### 5. Execution Backend (`core/execution.py`)
+
+Execution is pluggable:
+
+- **LocalExecutionBackend**: current behavior, runs everything inside `project.workspace`
+- **SSHExecutionBackend**: keeps controller state local, but runs the tool-visible
+  workspace, training commands, log reads, PID checks, and GPU queries on one
+  remote host over SSH
+
+The SSH backend is intentionally narrow in v1:
+- one remote host
+- one remote workspace root
+- no scheduler integration
+- no multi-host orchestration
+
+### 6. Tool Registry (`core/tools.py`)
 
 **Per-agent minimal tool sets** reduce token overhead:
 - Each tool definition is ~200 tokens in the API call
@@ -96,7 +111,11 @@ No LLM API calls until training completes.
 - 4 tools = 800 extra tokens per call
 - Over 100 API calls/day, that's 220K tokens saved
 
-### 6. Tool-Use Protocol (`core/agents.py::dispatch_worker`)
+ToolRegistry still owns command parsing and path safety. It validates
+relative paths and parses shell text into argv before delegating execution
+to the selected backend.
+
+### 7. Tool-Use Protocol (`core/agents.py::dispatch_worker`)
 
 Workers drive tool calls through a provider-agnostic text protocol rather
 than each SDK's native tool-use API:
@@ -134,7 +153,7 @@ Design rationale:
   (`idea=12`, `code=40`, `writing=30`); on overflow the loop exits cleanly
   and the last response is returned with a warning.
 
-### 7. GPU Utilities (`gpu/`)
+### 8. GPU Utilities (`gpu/`)
 
 - **detect.py**: Auto-detect GPUs, check availability, reserve last GPU
 - **keeper.py**: Keep cloud instances alive with minimal GPU activity
