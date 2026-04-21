@@ -5,13 +5,12 @@ Each agent gets a minimal tool set (3-5 tools) instead of all tools.
 This reduces token overhead per API call significantly.
 """
 
-import os
-import subprocess
 import json
 import logging
 import shlex
 from pathlib import Path
-from typing import Optional
+
+from .execution import ExecutionBackend, normalize_relative_path
 
 logger = logging.getLogger("autoresearcher.tools")
 
@@ -28,8 +27,8 @@ class ToolRegistry:
     Fewer tools = fewer tokens in each API call = lower cost.
     """
 
-    def __init__(self, workspace: Path):
-        self.workspace = Path(workspace).resolve()
+    def __init__(self, backend: ExecutionBackend):
+        self.backend = backend
         self._protected_files = {"state.json", "MEMORY_LOG.md", "PROJECT_BRIEF.md", ".lock"}
 
     def get_tools_for(self, agent_type: str) -> list[dict]:
@@ -178,23 +177,9 @@ class ToolRegistry:
 
     # --- Tool Implementations ---
 
-    def _resolve_workspace_path(self, path: str) -> Path:
-        """Resolve a user-supplied relative path and keep it inside the workspace."""
-        if path is None or not str(path).strip():
-            raise ValueError("Path cannot be empty")
-
-        requested = Path(path)
-        if requested.is_absolute():
-            raise ValueError("Path must be relative to workspace")
-
-        resolved = (self.workspace / requested).resolve(strict=False)
-
-        try:
-            resolved.relative_to(self.workspace)
-        except ValueError as exc:
-            raise ValueError(f"Path escapes workspace: {path}") from exc
-
-        return resolved
+    def _normalize_path(self, path: str) -> str:
+        """Validate a tool-visible path and keep it workspace-relative."""
+        return normalize_relative_path(path)
 
     def _parse_command(self, command: str) -> list[str]:
         """Parse command text into argv without invoking a shell."""
@@ -227,69 +212,41 @@ class ToolRegistry:
 
     def _exec_run_shell(self, command: str, timeout: int = 120) -> str:
         """Execute a shell command with timeout."""
-        try:
-            argv = self._parse_command(command)
-            result = subprocess.run(
-                argv,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=str(self.workspace),
-            )
-            return json.dumps({
-                "stdout": result.stdout[-2000:],  # Cap output
-                "stderr": result.stderr[-500:],
-                "returncode": result.returncode,
-            })
-        except subprocess.TimeoutExpired:
-            return json.dumps({"error": f"Command timed out after {timeout}s"})
+        argv = self._parse_command(command)
+        result = self.backend.run_command(argv=argv, timeout=timeout)
+        return json.dumps(result)
 
     def _exec_launch_experiment(self, command: str, log_file: str, gpu: str = None) -> str:
         """Launch experiment via nohup."""
-        env = os.environ.copy()
+        env = {}
         if gpu:
             env["CUDA_VISIBLE_DEVICES"] = gpu
 
         argv = self._parse_command(command)
-        log_path = self._resolve_workspace_path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(log_path, "w") as f:
-            proc = subprocess.Popen(
-                argv,
-                stdout=f,
-                stderr=subprocess.STDOUT,
-                env=env,
-                start_new_session=True,
-                cwd=str(self.workspace),
-            )
-
-        return json.dumps({"pid": proc.pid, "log_file": str(log_path), "status": "launched"})
+        result = self.backend.launch_command(
+            argv=argv,
+            log_file=self._normalize_path(log_file),
+            env=env,
+        )
+        return json.dumps(result)
 
     def _exec_write_file(self, path: str, content: str) -> str:
         """Write file with protection check."""
-        if Path(path).name in self._protected_files:
+        normalized = self._normalize_path(path)
+        if normalized.split("/")[-1] in self._protected_files:
             return json.dumps({"error": f"Cannot overwrite protected file: {path}"})
 
-        file_path = self._resolve_workspace_path(path)
-        file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_text(content)
-        return json.dumps({"status": "written", "path": str(file_path), "bytes": len(content)})
+        result = self.backend.write_file(normalized, content)
+        return json.dumps(result)
 
     def _exec_read_file(self, path: str) -> str:
         """Read file contents."""
-        file_path = self._resolve_workspace_path(path)
-        if not file_path.exists():
-            return json.dumps({"error": f"File not found: {path}"})
-        content = file_path.read_text()
+        content = self.backend.read_file(self._normalize_path(path))
         return content[:10000]  # Cap at 10K chars
 
     def _exec_list_files(self, path: str = ".") -> str:
         """List directory contents."""
-        dir_path = self._resolve_workspace_path(path)
-        if not dir_path.is_dir():
-            return json.dumps({"error": f"Not a directory: {path}"})
-        files = sorted([f.name for f in dir_path.iterdir()])
+        files = self.backend.list_files(self._normalize_path(path))
         return json.dumps({"files": files[:100]})  # Cap at 100 entries
 
     def _exec_search_papers(self, query: str, limit: int = 10, year: str = None) -> str:

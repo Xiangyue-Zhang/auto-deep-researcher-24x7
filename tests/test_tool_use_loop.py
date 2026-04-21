@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from core.agents import AgentDispatcher
+from core.execution import LocalExecutionBackend
 from core.tools import ToolRegistry
 
 
@@ -273,7 +274,7 @@ class DispatchWorkerLoopTests(unittest.TestCase):
         dispatcher = _make_dispatcher()
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
-            registry = ToolRegistry(workspace)
+            registry = ToolRegistry(LocalExecutionBackend(workspace))
 
             turns = [
                 '<tool_call>{"name": "write_file", '

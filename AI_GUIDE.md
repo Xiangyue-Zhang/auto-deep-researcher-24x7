@@ -128,6 +128,27 @@ agent:
   model: "codex-5.3"            # or claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4
 ```
 
+Optional SSH execution mode:
+
+```yaml
+execution:
+  mode: "ssh"
+  ssh_host: "user@server"
+  remote_workspace: "/home/user/my_project/workspace"
+  remote_python: "python3"
+  ssh_args: []                  # optional, e.g. ["-p", "2222"]
+```
+
+In SSH mode, the controller state still stays local:
+- `PROJECT_BRIEF.md`
+- `workspace/MEMORY_LOG.md`
+- `workspace/state.json`
+- `workspace/HUMAN_DIRECTIVE.md`
+- local progress / Obsidian exports
+
+The remote host handles code edits, shell commands, training, log reads,
+PID checks, and GPU queries.
+
 **When to pick subscription (`claude_cli` / `codex_cli`):**
 - Running multiple agents in parallel (one subscription can power them all)
 - Heavy Think / Reflect usage where API tokens would add up
@@ -248,6 +269,18 @@ cat ~/PROJECT_NAME/workspace/.cycle_counter   # See how many cycles completed
 nvidia-smi                                     # See GPU usage
 ```
 
+If `execution.mode=ssh`, those manual checks split:
+
+```bash
+# Controller state still local:
+cat ~/PROJECT_NAME/workspace/MEMORY_LOG.md
+cat ~/PROJECT_NAME/workspace/.cycle_counter
+
+# Training logs / GPU state live on the remote host:
+ssh user@server 'tail -50 /home/user/my_project/workspace/logs/exp001.log'
+ssh user@server nvidia-smi
+```
+
 For persistent progress notes:
 
 ```yaml
@@ -332,9 +365,12 @@ THINK (LLM, ~$0.05) → EXECUTE (LLM→training) → MONITOR ($0.00) → REFLECT
 
 ### Why It's Cheap
 During training (90%+ of time), the agent does NOT call the LLM. It only does:
-- `kill -0 $PID` — is the process alive? (zero cost)
-- `nvidia-smi` — is GPU active? (zero cost)  
-- `tail -50 logfile` — latest metrics (zero cost)
+- backend PID check — is the process alive? (zero cost)
+- backend `nvidia-smi` — is GPU active? (zero cost)
+- backend `tail -50 logfile` — latest metrics (zero cost)
+
+In local mode the backend is your current machine. In SSH mode the backend is
+one configured remote host, while the controller state stays local.
 
 ### Memory System
 - Tier 1: `PROJECT_BRIEF.md` — frozen, human-written, max 3000 chars

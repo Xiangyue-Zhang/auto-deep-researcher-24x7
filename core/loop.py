@@ -17,6 +17,7 @@ from typing import Optional
 from .memory import MemoryManager
 from .monitor import ExperimentMonitor
 from .agents import AgentDispatcher
+from .execution import build_execution_backend
 from .obsidian import ObsidianExporter
 from .tools import ToolRegistry
 
@@ -38,6 +39,8 @@ class ResearchLoop:
         self.workspace = self.project_dir / config.get("project", {}).get("workspace", "workspace")
         self.workspace.mkdir(exist_ok=True)
         self.state_path = self.workspace / "state.json"
+        self.execution_backend = build_execution_backend(config=config, controller_workspace=self.workspace)
+        self.execution_backend.validate()
 
         # Core components
         self.memory = MemoryManager(
@@ -50,14 +53,19 @@ class ResearchLoop:
         self.monitor = ExperimentMonitor(
             poll_interval=config.get("monitor", {}).get("poll_interval", 900),
             zero_llm=config.get("monitor", {}).get("zero_llm", True),
+            backend=self.execution_backend,
         )
         self.dispatcher = AgentDispatcher(
             model=config.get("agent", {}).get("model", "claude-sonnet-4-6"),
             provider=config.get("agent", {}).get("provider", "anthropic"),
             max_steps=config.get("agent", {}).get("max_steps_per_cycle", 3),
         )
-        self.tools = ToolRegistry(self.workspace)
-        self.obsidian = ObsidianExporter(config=config, project_dir=self.project_dir)
+        self.tools = ToolRegistry(self.execution_backend)
+        self.obsidian = ObsidianExporter(
+            config=config,
+            project_dir=self.project_dir,
+            backend=self.execution_backend,
+        )
 
         # State
         self.cycle_count = self._load_cycle_counter()

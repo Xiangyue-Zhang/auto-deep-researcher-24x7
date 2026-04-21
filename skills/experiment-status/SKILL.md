@@ -19,10 +19,14 @@ Check the current status of your autonomous experiment agent.
 1. Read `PROJECT_BRIEF.md` — show the research goal
 2. Read `MEMORY_LOG.md` — show key results and recent decisions  
 3. Read `.cycle_counter` — show how many cycles completed
-4. Check for running training processes (via PID files or `pgrep`)
-5. If training is running, `tail` the log file for latest output
-6. Show GPU utilization for the project's GPUs
+4. Check for running training processes via the configured execution backend
+5. If training is running, tail the log file for latest output
+6. Show GPU utilization through the configured backend
 7. Check if `HUMAN_DIRECTIVE.md` exists (pending directive)
+
+If `execution.mode=ssh`, controller state still comes from the local project
+directory, but PID checks, training logs, and GPU status come from the
+configured remote host.
 
 ## Output Format
 

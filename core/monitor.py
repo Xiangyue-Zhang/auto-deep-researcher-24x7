@@ -4,7 +4,7 @@ AutoResearcher Experiment Monitor
 The key innovation: ZERO LLM calls during experiment training.
 
 While your model trains (hours/days), the monitor only does:
-- Process alive check (kill -0 PID)
+- Process alive check
 - Log file tail read
 - GPU utilization check
 
@@ -12,12 +12,12 @@ This means running AutoResearcher 24/7 costs the same as running it
 only during the THINK and REFLECT phases.
 """
 
-import os
-import time
-import subprocess
 import logging
-from pathlib import Path
+import shlex
+import time
 from typing import Optional
+
+from .execution import ExecutionBackend, LocalExecutionBackend
 
 logger = logging.getLogger("autoresearcher.monitor")
 
@@ -30,9 +30,15 @@ class ExperimentMonitor:
     and results need analysis.
     """
 
-    def __init__(self, poll_interval: int = 900, zero_llm: bool = True):
+    def __init__(
+        self,
+        poll_interval: int = 900,
+        zero_llm: bool = True,
+        backend: Optional[ExecutionBackend] = None,
+    ):
         self.poll_interval = poll_interval  # seconds between checks
         self.zero_llm = zero_llm
+        self.backend = backend or LocalExecutionBackend(".")
         self._active_experiments: dict[int, dict] = {}
 
     def launch_experiment(self, command: str, log_file: str, gpu: Optional[str] = None) -> dict:
@@ -46,33 +52,23 @@ class ExperimentMonitor:
         Returns:
             dict with pid, log_file, start_time
         """
-        env = os.environ.copy()
+        env = {}
         if gpu is not None:
             env["CUDA_VISIBLE_DEVICES"] = str(gpu)
 
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(log_path, "w") as log_f:
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=log_f,
-                stderr=subprocess.STDOUT,
-                env=env,
-                preexec_fn=os.setsid,  # New process group (survives parent death)
-            )
-
-        experiment = {
-            "pid": process.pid,
-            "log_file": str(log_path),
+        experiment = self.backend.launch_command(
+            argv=shlex.split(command),
+            log_file=log_file,
+            env=env,
+        )
+        experiment.update({
             "start_time": time.time(),
             "command": command,
             "status": "running",
-        }
-        self._active_experiments[process.pid] = experiment
+        })
+        self._active_experiments[experiment["pid"]] = experiment
 
-        logger.info(f"Launched experiment: PID={process.pid}, cmd={command[:80]}...")
+        logger.info(f"Launched experiment: PID={experiment['pid']}, cmd={command[:80]}...")
         return experiment
 
     def wait_for_completion(self, pid: int, log_file: str, notify: bool = True) -> dict:
@@ -87,8 +83,8 @@ class ExperimentMonitor:
             time.sleep(self.poll_interval)
 
             # Log current status (no LLM involved)
-            gpu_info = self._get_gpu_status()
-            log_tail = self._tail_file(log_file, lines=5)
+            gpu_info = self._safe_gpu_status()
+            log_tail = self._safe_tail_file(log_file, lines=5)
             elapsed = time.time() - self._active_experiments.get(pid, {}).get("start_time", time.time())
 
             logger.info(
@@ -99,7 +95,7 @@ class ExperimentMonitor:
 
         # Experiment finished
         elapsed = time.time() - self._active_experiments.get(pid, {}).get("start_time", time.time())
-        log_tail = self._tail_file(log_file, lines=50)
+        log_tail = self._safe_tail_file(log_file, lines=50)
 
         if pid in self._active_experiments:
             self._active_experiments[pid]["status"] = "completed"
@@ -129,41 +125,17 @@ class ExperimentMonitor:
 
     def _is_process_alive(self, pid: int) -> bool:
         """Check if process is still running (zero cost)."""
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
+        return self.backend.is_process_alive(pid)
 
-    def _get_gpu_status(self) -> dict:
-        """Get GPU utilization via nvidia-smi."""
+    def _safe_gpu_status(self) -> dict:
         try:
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total",
-                 "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                lines = result.stdout.strip().split("\n")
-                gpus = []
-                for line in lines:
-                    parts = [p.strip() for p in line.split(",")]
-                    if len(parts) >= 3:
-                        gpus.append({
-                            "utilization": f"{parts[0]}%",
-                            "memory": f"{parts[1]}MB/{parts[2]}MB",
-                        })
-                return {"gpus": gpus, "utilization": gpus[0]["utilization"] if gpus else "N/A"}
+            return self.backend.get_gpu_status()
         except Exception:
-            pass
-        return {"utilization": "N/A"}
+            return {"utilization": "N/A"}
 
-    def _tail_file(self, filepath: str, lines: int = 50) -> list[str]:
-        """Read last N lines of a file (zero cost)."""
+    def _safe_tail_file(self, filepath: str, lines: int = 50) -> list[str]:
         try:
-            with open(filepath, "r") as f:
-                all_lines = f.readlines()
-                return [l.rstrip() for l in all_lines[-lines:]]
+            return self.backend.tail_file(filepath, lines=lines)
         except Exception:
             return []
 

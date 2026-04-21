@@ -6,6 +6,16 @@ project:
   brief: "PROJECT_BRIEF.md"
   workspace: "./workspace"
 
+execution:
+  # Where tools and training commands run:
+  #   "local" — current behavior; use project.workspace on this machine
+  #   "ssh"   — keep controller state local but run tools/training on one remote host
+  mode: "local"
+  ssh_host: ""                    # Required when mode="ssh", e.g. "user@server"
+  remote_workspace: ""            # Required when mode="ssh", remote tool-visible workspace root
+  remote_python: "python3"        # Python used on the remote host for the helper shim
+  ssh_args: []                    # Optional extra ssh argv items, e.g. ["-p", "2222"]
+
 agent:
   # Provider:
   #   "anthropic"  — SDK, per-token API billing (ANTHROPIC_API_KEY)
