@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import tempfile
 import time
 import unittest
@@ -7,6 +9,7 @@ from unittest.mock import patch
 
 from core.execution import (
     LocalExecutionBackend,
+    REMOTE_HELPER,
     SSHExecutionBackend,
     build_execution_backend,
 )
@@ -98,6 +101,34 @@ class BuildExecutionBackendTests(unittest.TestCase):
 
 
 class SSHExecutionBackendTests(unittest.TestCase):
+    def test_remote_helper_rejects_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            outside = Path(tmp) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            os.symlink(outside, root / "escape")
+
+            payload = {
+                "action": "write_file",
+                "remote_workspace": str(root),
+                "path": "escape/pwned.txt",
+                "content": "x",
+            }
+            proc = subprocess.run(
+                ["python3", "-c", REMOTE_HELPER],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0)
+            body = json.loads(proc.stdout)
+            self.assertFalse(body["ok"])
+            self.assertIn("escapes workspace", body["error"])
+            self.assertFalse((outside / "pwned.txt").exists())
+
     @patch("core.execution.shutil.which", return_value="/usr/bin/ssh")
     @patch("core.execution.subprocess.run")
     def test_validate_invokes_remote_helper(self, run_mock, _which_mock):

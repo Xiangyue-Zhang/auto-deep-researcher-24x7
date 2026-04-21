@@ -37,6 +37,13 @@
 
 ## Recent Updates
 
+**2026-04-21**
+- Added an optional `execution.mode: "ssh"` backend so the controller can stay local while code edits, shell commands, training, log reads, PID checks, and GPU queries run on one remote host.
+- Controller state remains local in SSH mode: `PROJECT_BRIEF.md`, `workspace/MEMORY_LOG.md`, `workspace/state.json`, `workspace/HUMAN_DIRECTIVE.md`, and local progress / Obsidian exports.
+- `ToolRegistry`, zero-cost experiment monitoring, and Obsidian/dashboard status now all flow through a shared execution backend abstraction.
+- Hardened the SSH backend transport by invoking the remote helper through a compact launcher, and tightened remote path resolution so symlinks cannot escape the configured remote workspace.
+- Updated `README.md`, `AI_GUIDE.md`, architecture docs, config comments, and slash-command guidance to document local vs. SSH execution.
+
 **2026-04-19**
 - Workers now execute tools through a real multi-turn tool-use loop. The dispatcher injects the tool schema into the system prompt, parses `<tool_call>` blocks from the LLM response, runs each through `ToolRegistry.execute_tool`, feeds results back as `<tool_result>` in the next turn, and iterates until the worker produces a response with no tool calls or `max_turns` is hit. Previously the `tools` argument was accepted and silently dropped, and worker output was regex-scraped for PIDs — closes the gap raised in issue #13.
 - `launch_experiment` PIDs and log file paths are now surfaced directly from the tool result (authoritative), with the old free-text regex retained only as a fallback for pre-protocol responses.
