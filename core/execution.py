@@ -45,7 +45,12 @@ REMOTE_HELPER = textwrap.dedent(
 
     def resolve_path(root, raw):
         rel = normalize_rel(raw)
-        return (root / rel).resolve(strict=False)
+        resolved = (root / rel).resolve(strict=False)
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(f"Path escapes workspace: {raw}") from exc
+        return resolved
 
 
     def gpu_status():
