@@ -38,42 +38,22 @@
 ## Recent Updates
 
 **2026-04-22**
-- Added explicit compatible-API configuration for SDK providers: `agent.base_url`, `agent.api_key_env`, and `agent.auth_token_env`.
-- `provider: "openai"` now cleanly covers OpenAI-compatible endpoints such as Qwen / GLM / MiniMax, without adding provider-specific branches.
-- Added Codex local skill installation alongside Claude Code slash-command installation. `python install.py` now installs into both `~/.codex/skills` and `~/.claude/commands`.
-- Added `agents/openai.yaml` metadata for all built-in skills, and normalized the source `SKILL.md` files so the repo-level skills are Codex-compatible without relying on install-time frontmatter cleanup.
-- Hardened the installer against half-installed state: it now preflights Codex skill ownership before writing Claude-side artifacts, and refuses to overwrite unowned local Codex skills.
-- Updated `README.md`, `AI_GUIDE.md`, `CLAUDE.md`, `config.yaml`, and skill docs with compatible API and dual Claude/Codex skill guidance.
+- Added explicit compatible-API configuration, dual Claude/Codex skill installation, and safer skill-installer ownership checks.
 
 **2026-04-21**
-- Added an optional `execution.mode: "ssh"` backend so the controller can stay local while code edits, shell commands, training, log reads, PID checks, and GPU queries run on one remote host.
-- Controller state remains local in SSH mode: `PROJECT_BRIEF.md`, `workspace/MEMORY_LOG.md`, `workspace/state.json`, `workspace/HUMAN_DIRECTIVE.md`, and local progress / Obsidian exports.
-- `ToolRegistry`, zero-cost experiment monitoring, and Obsidian/dashboard status now all flow through a shared execution backend abstraction.
-- Hardened the SSH backend transport by invoking the remote helper through a compact launcher, and tightened remote path resolution so symlinks cannot escape the configured remote workspace.
-- Updated `README.md`, `AI_GUIDE.md`, architecture docs, config comments, and slash-command guidance to document local vs. SSH execution.
+- Added an optional SSH execution backend so the controller can stay local while code edits, training, logs, PID checks, and GPU queries run on one remote host.
 
 **2026-04-19**
-- Workers now execute tools through a real multi-turn tool-use loop. The dispatcher injects the tool schema into the system prompt, parses `<tool_call>` blocks from the LLM response, runs each through `ToolRegistry.execute_tool`, feeds results back as `<tool_result>` in the next turn, and iterates until the worker produces a response with no tool calls or `max_turns` is hit. Previously the `tools` argument was accepted and silently dropped, and worker output was regex-scraped for PIDs — closes the gap raised in issue #13.
-- `launch_experiment` PIDs and log file paths are now surfaced directly from the tool result (authoritative), with the old free-text regex retained only as a fallback for pre-protocol responses.
-- `claude_cli` is forced into pure-text mode via `claude -p --tools ""`, so its responses reliably go through the framework's protocol.
-- `codex_cli` cannot be forced into pure-text mode by any current flag; when used as a worker provider the framework now emits a clear warning (see the updated compatibility table in *Supported LLM Providers*).
-- Tool-call blocks inside triple-backtick code fences are stripped before parsing, so illustrative examples in the LLM's prose are no longer accidentally executed.
-- Dead parameters (`tools`, `max_turns`) removed from `_call_llm`. They were never forwarded to the SDK; this aligns the code with what it actually does.
+- Added a real multi-turn worker tool-use loop with authoritative tool-result handoff, stricter CLI behavior, and safer tool-call parsing.
 
 **2026-04-18**
-- Added two new `provider` modes that reuse existing flat-rate subscriptions instead of per-token API billing: `claude_cli` (via the local `claude -p` CLI) and `codex_cli` (via the local `codex exec` CLI). Much cheaper when running multiple 24/7 agents in parallel. See the updated *Supported LLM Providers* section for the full API-vs-subscription trade-off table.
-- Provider validation added at dispatcher construction; unknown provider values now fail fast with a clear error instead of silently falling through.
-- CLI subprocess path is defensive: missing binary, non-zero exit, and 10-min timeout all degrade to a structured wait-action reply rather than crashing the loop. Oversize prompts automatically fall back from argv to stdin.
+- Added subscription-backed `claude_cli` and `codex_cli` provider modes with fail-fast provider validation and more defensive CLI subprocess handling.
 
 **2026-04-09**
-- Reduced token growth by resetting leader context between cycles.
-- Added a lightweight fallback to avoid repeated no-progress loops.
-- Hardened tool execution against path traversal and shell injection.
+- Reduced token growth and tightened loop/tool safeguards with leader-history resets, no-progress fallback, and stronger path and shell protections.
 
 **2026-04-08**
-- Added progress tracking exports for experiment monitoring.
-- Supports optional Obsidian sync for a live dashboard plus daily notes.
-- If no Obsidian vault is configured, progress falls back to project-local text files under `workspace/progress_tracking/`.
+- Added progress tracking exports with optional Obsidian sync and local text fallback when no vault is configured.
 
 ## Start In 3 Steps
 
