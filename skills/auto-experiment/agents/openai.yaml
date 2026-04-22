@@ -1,0 +1,4 @@
+interface:
+  display_name: "Auto Experiment"
+  short_description: "Launch a 24/7 autonomous experiment loop"
+  default_prompt: "Use $auto-experiment to launch or resume a Deep Researcher experiment loop for this project."

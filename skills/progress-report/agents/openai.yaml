@@ -1,0 +1,4 @@
+interface:
+  display_name: "Progress Report"
+  short_description: "Write a structured report from recent experiments"
+  default_prompt: "Use $progress-report to write a structured research progress report from recent experiment history."

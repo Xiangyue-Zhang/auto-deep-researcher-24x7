@@ -1,0 +1,4 @@
+interface:
+  display_name: "Conference Search"
+  short_description: "Search top-conference papers by venue and query"
+  default_prompt: "Use $conf-search to search papers from top conferences by venue and query."

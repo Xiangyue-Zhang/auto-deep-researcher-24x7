@@ -1,0 +1,4 @@
+interface:
+  display_name: "GPU Monitor"
+  short_description: "Check GPU usage, free devices, and running jobs"
+  default_prompt: "Use $gpu-monitor to check current GPU usage, free devices, and running processes."

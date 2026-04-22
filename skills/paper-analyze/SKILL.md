@@ -3,14 +3,15 @@ name: paper-analyze
 description: "Deep analysis of a single paper with figure extraction from arXiv source"
 ---
 
-# /paper-analyze
+# paper-analyze
 
 Perform deep analysis of a single academic paper.
 
 ## Usage
 
 ```
-/paper-analyze <arxiv_id or url>
+Claude Code: /paper-analyze <arxiv_id or url>
+Codex: $paper-analyze
 ```
 
 ## Behavior

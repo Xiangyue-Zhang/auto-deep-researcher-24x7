@@ -1,0 +1,4 @@
+interface:
+  display_name: "Experiment Status"
+  short_description: "Inspect experiment progress, logs, and GPU status"
+  default_prompt: "Use $experiment-status to inspect the current Deep Researcher loop, training logs, and GPU status."

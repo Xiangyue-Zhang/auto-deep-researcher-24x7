@@ -1,0 +1,4 @@
+interface:
+  display_name: "Obsidian Sync"
+  short_description: "Refresh the Obsidian dashboard and daily notes"
+  default_prompt: "Use $obsidian-sync to refresh the Obsidian dashboard or local progress notes for this project."

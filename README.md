@@ -37,6 +37,14 @@
 
 ## Recent Updates
 
+**2026-04-22**
+- Added explicit compatible-API configuration for SDK providers: `agent.base_url`, `agent.api_key_env`, and `agent.auth_token_env`.
+- `provider: "openai"` now cleanly covers OpenAI-compatible endpoints such as Qwen / GLM / MiniMax, without adding provider-specific branches.
+- Added Codex local skill installation alongside Claude Code slash-command installation. `python install.py` now installs into both `~/.codex/skills` and `~/.claude/commands`.
+- Added `agents/openai.yaml` metadata for all built-in skills, and normalized the source `SKILL.md` files so the repo-level skills are Codex-compatible without relying on install-time frontmatter cleanup.
+- Hardened the installer against half-installed state: it now preflights Codex skill ownership before writing Claude-side artifacts, and refuses to overwrite unowned local Codex skills.
+- Updated `README.md`, `AI_GUIDE.md`, `CLAUDE.md`, `config.yaml`, and skill docs with compatible API and dual Claude/Codex skill guidance.
+
 **2026-04-21**
 - Added an optional `execution.mode: "ssh"` backend so the controller can stay local while code edits, shell commands, training, log reads, PID checks, and GPU queries run on one remote host.
 - Controller state remains local in SSH mode: `PROJECT_BRIEF.md`, `workspace/MEMORY_LOG.md`, `workspace/state.json`, `workspace/HUMAN_DIRECTIVE.md`, and local progress / Obsidian exports.
@@ -83,7 +91,7 @@ Prefer AI-guided setup? Open [`AI_GUIDE.md`](AI_GUIDE.md) in Claude / ChatGPT / 
 |-------------|----------|-------|
 | Python 3.10+ | Yes | Runtime |
 | 1+ NVIDIA GPU | Yes | For training |
-| API key | Yes | Anthropic or OpenAI |
+| API key | Yes | Anthropic-compatible or OpenAI-compatible endpoint |
 | `PROJECT_BRIEF.md` | Yes | Main control file |
 | Project `config.yaml` | Optional | Only if you want to override defaults |
 | Obsidian vault | Optional | If absent, notes fall back to local text files |
@@ -386,7 +394,7 @@ cd auto-deep-researcher-24x7
 # Install Python dependencies
 pip install -r requirements.txt
 
-# Install 8 slash commands into Claude Code
+# Install 8 Claude slash commands and 8 Codex local skills
 python install.py
 
 # Verify everything works
@@ -398,17 +406,18 @@ You should see:
   Deep Researcher Agent — Installer
   ========================================
 
-    ✓ /auto-experiment
-    ✓ /experiment-status
-    ✓ /gpu-monitor
-    ✓ /daily-papers
-    ✓ /paper-analyze
-    ✓ /conf-search
-    ✓ /progress-report
+    ✓ Claude /auto-experiment
+    ✓ Claude /experiment-status
+    ✓ Claude /gpu-monitor
+    ✓ Claude /daily-papers
+    ✓ Claude /paper-analyze
+    ✓ Claude /conf-search
+    ✓ Claude /progress-report
+    ✓ Claude /obsidian-sync
+    ✓ Codex $auto-experiment
+    ...
 
-    ✓ /obsidian-sync
-
-  Done! 8 skills installed.
+  Done! 8 Claude commands and 8 Codex skills installed.
 ```
 
 ### Step 2: Create Your First Project
@@ -811,15 +820,18 @@ Yes. The agent works with any training framework. It just launches shell command
 
 ---
 
-## One-Click Install (Claude Code Skills)
+## One-Click Install (Claude + Codex)
 
-All features are packaged as Claude Code slash commands. **One command to install:**
+All features are packaged as Claude Code slash commands and Codex local skills.
+**One command to install:**
 
 ```bash
 python install.py
 ```
 
-After installation, you get **8 slash commands** in Claude Code:
+After installation, you get:
+- **8 slash commands** in Claude Code
+- **8 local skills** in Codex (restart Codex after install)
 
 ### Core Skills
 
@@ -845,8 +857,11 @@ After installation, you get **8 slash commands** in Claude Code:
 # Step 1: Install skills (one time)
 python install.py
 
-# Step 2: In Claude Code, launch an experiment loop
+# Step 2a: In Claude Code, launch an experiment loop
 /auto-experiment --project /path/to/my_project --gpu 0
+
+# Step 2b: In Codex, use the matching local skill
+$auto-experiment
 
 # Step 3: Check how it's going
 /experiment-status --project /path/to/my_project
@@ -868,8 +883,9 @@ python install.py --uninstall
 
 ## Supported LLM Providers
 
-Works with **both Anthropic and OpenAI** out of the box, and can run on a
-**flat-rate subscription** instead of per-token billing via the local CLIs.
+Works with **Anthropic-compatible and OpenAI-compatible APIs** out of the box,
+and can also run on a **flat-rate subscription** instead of per-token billing
+via the local CLIs.
 
 | Tier | Anthropic (Claude) | OpenAI (Codex/GPT) | Best For |
 |------|-------------------|-------------------|----------|
@@ -880,8 +896,8 @@ Works with **both Anthropic and OpenAI** out of the box, and can run on a
 
 | Mode | `provider` value | Billing | Requires | Tool-use support |
 |------|------------------|---------|----------|------------------|
-| API — Anthropic | `anthropic` | Per-token, via `ANTHROPIC_API_KEY` | `pip install anthropic` | ✅ Full |
-| API — OpenAI | `openai` | Per-token, via `OPENAI_API_KEY` | `pip install openai` | ✅ Full |
+| API — Anthropic-compatible | `anthropic` | Per-token, via `ANTHROPIC_API_KEY` or custom env | `pip install anthropic` | ✅ Full |
+| API — OpenAI-compatible | `openai` | Per-token, via `OPENAI_API_KEY` or custom env | `pip install openai` | ✅ Full |
 | **Subscription — Claude** | `claude_cli` | Flat-rate, uses your Claude Code / Pro / Max plan | `claude` CLI installed and logged in | ✅ Full |
 | **Subscription — ChatGPT** | `codex_cli` | Flat-rate, uses your ChatGPT Plus / Pro plan | `codex` CLI installed and logged in | ⚠️ Leader only |
 
@@ -900,18 +916,49 @@ agent:
   # Pay-per-token (needs API key):
   provider: "anthropic"           # or "openai"
   model: "claude-sonnet-4-6"      # or "codex-5.3"
+  base_url: ""                    # optional compatible endpoint override
+  api_key_env: ""                 # optional custom key env var name
+  auth_token_env: ""              # optional custom bearer token env var
 
   # Flat-rate subscription (needs CLI login instead of API key):
   # provider: "claude_cli"        # or "codex_cli"
 ```
 
+Compatible API examples
+(illustrative only in this repo — these endpoint/model combinations have not
+been live-smoke-tested here):
+```yaml
+# Qwen / DashScope
+agent:
+  provider: "openai"
+  model: "qwen-plus"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key_env: "DASHSCOPE_API_KEY"
+
+# GLM / BigModel
+agent:
+  provider: "openai"
+  model: "glm-4.5"
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key_env: "ZHIPUAI_API_KEY"
+
+# MiniMax via OpenAI-compatible endpoint
+agent:
+  provider: "openai"
+  model: "MiniMax-M1"
+  base_url: "https://api.minimaxi.com/v1"
+  api_key_env: "MINIMAX_API_KEY"
+```
+
 Or set via environment (API-key modes only):
 ```bash
-# For API-key "anthropic" provider:
+# For Anthropic-compatible provider:
 export ANTHROPIC_API_KEY="sk-ant-xxxxx"
+export ANTHROPIC_BASE_URL="https://your-anthropic-compatible-endpoint"
 
-# For API-key "openai" provider:
+# For OpenAI-compatible provider:
 export OPENAI_API_KEY="sk-xxxxx"
+export OPENAI_BASE_URL="https://your-openai-compatible-endpoint/v1"
 
 # For subscription providers (claude_cli / codex_cli): no env var — just
 # install the CLI once and run `claude` or `codex login` to sign in.
@@ -960,6 +1007,9 @@ execution:
 agent:
   provider: "anthropic"           # "anthropic" or "openai"
   model: "claude-sonnet-4-6"      # See model table above
+  base_url: ""                    # Optional compatible API endpoint override
+  api_key_env: ""                 # Optional custom API key env var
+  auth_token_env: ""              # Optional custom bearer token env var
   max_cycles: -1                  # -1 = run forever
   max_steps_per_cycle: 3          # Max worker dispatches per cycle
   cooldown_interval: 300          # Smart cooldown polling (seconds)
@@ -1013,7 +1063,7 @@ auto-deep-researcher-24x7/
 │   ├── monitor.py           # Zero-LLM experiment monitoring
 │   ├── agents.py            # Leader-Worker agent dispatch
 │   └── tools.py             # Minimal per-agent tool registry
-├── skills/                  # Claude Code slash commands (python install.py)
+├── skills/                  # Source skills for Claude slash commands + Codex local skills
 │   ├── auto-experiment/     # 24/7 autonomous experiment loop
 │   ├── experiment-status/   # Check experiment progress
 │   ├── gpu-monitor/         # GPU status & availability
@@ -1031,7 +1081,7 @@ auto-deep-researcher-24x7/
 │   └── keeper.py            # Cloud instance keep-alive
 ├── examples/                # Ready-to-run demos
 ├── docs/                    # Docs + translations (CN/JP)
-├── install.py               # Claude Code skill installer
+├── install.py               # Claude + Codex skill installer
 ├── config.yaml              # Default configuration
 └── requirements.txt         # Dependencies
 ```

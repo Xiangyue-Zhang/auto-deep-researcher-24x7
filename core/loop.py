@@ -55,10 +55,14 @@ class ResearchLoop:
             zero_llm=config.get("monitor", {}).get("zero_llm", True),
             backend=self.execution_backend,
         )
+        agent_config = config.get("agent", {}) or {}
         self.dispatcher = AgentDispatcher(
-            model=config.get("agent", {}).get("model", "claude-sonnet-4-6"),
-            provider=config.get("agent", {}).get("provider", "anthropic"),
-            max_steps=config.get("agent", {}).get("max_steps_per_cycle", 3),
+            model=agent_config.get("model", "claude-sonnet-4-6"),
+            provider=agent_config.get("provider", "anthropic"),
+            max_steps=agent_config.get("max_steps_per_cycle", 3),
+            base_url=agent_config.get("base_url", ""),
+            api_key_env=agent_config.get("api_key_env", ""),
+            auth_token_env=agent_config.get("auth_token_env", ""),
         )
         self.tools = ToolRegistry(self.execution_backend)
         self.obsidian = ObsidianExporter(
@@ -69,9 +73,9 @@ class ResearchLoop:
 
         # State
         self.cycle_count = self._load_cycle_counter()
-        self.max_cycles = config.get("agent", {}).get("max_cycles", -1)
-        self.cooldown = config.get("agent", {}).get("cooldown_interval", 300)
-        self.no_progress_fallback_threshold = config.get("agent", {}).get("no_progress_fallback_threshold", 3)
+        self.max_cycles = agent_config.get("max_cycles", -1)
+        self.cooldown = agent_config.get("cooldown_interval", 300)
+        self.no_progress_fallback_threshold = agent_config.get("no_progress_fallback_threshold", 3)
         self._running = True
         self._no_progress_streak = 0
         self._last_no_progress_signature = ""

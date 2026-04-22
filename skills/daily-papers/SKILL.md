@@ -3,9 +3,11 @@ name: daily-papers
 description: "Daily arXiv paper recommendations with automatic deduplication"
 ---
 
-# /daily-papers
+# daily-papers
 
 Search arXiv for the latest papers relevant to the user's research interests.
+
+Invoke as `/daily-papers` in Claude Code or `$daily-papers` in Codex.
 
 ## Behavior
 

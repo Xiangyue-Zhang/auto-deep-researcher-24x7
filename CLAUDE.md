@@ -98,17 +98,20 @@ Run these commands and report results to the user:
 ```bash
 python3 --version          # Need 3.10+
 nvidia-smi                 # Need at least 1 GPU
-echo $ANTHROPIC_API_KEY    # Need Anthropic key
-echo $OPENAI_API_KEY       # OR OpenAI key (either works)
+echo $ANTHROPIC_API_KEY    # Anthropic-compatible key, if using provider=anthropic
+echo $OPENAI_API_KEY       # OpenAI-compatible key, if using provider=openai
 ```
 
 If Python < 3.10: suggest `conda create -n dra python=3.11 -y && conda activate dra`
 
 If no GPU: this framework requires a GPU for training. Suggest cloud GPU (Lambda Labs, RunPod, Vast.ai).
 
-If no API key: guide them to:
+If no API key: guide them to either an official endpoint or a compatible provider:
 - Anthropic: https://console.anthropic.com/ → API Keys → Create Key
 - OpenAI: https://platform.openai.com/api-keys → Create new secret key
+- Qwen / DashScope: create `DASHSCOPE_API_KEY`
+- GLM / BigModel: create `ZHIPUAI_API_KEY`
+- MiniMax: create `MINIMAX_API_KEY`
 
 Then set it:
 ```bash
@@ -131,7 +134,7 @@ cd auto-deep-researcher-24x7
 # Install dependencies
 pip install -r requirements.txt
 
-# Install Claude Code / Codex skills (8 slash commands)
+# Install Claude slash commands + Codex local skills
 python install.py
 
 # Verify
@@ -140,15 +143,17 @@ python -m core.loop --check
 
 **Expected output:**
 ```
-    ✓ /auto-experiment
-    ✓ /experiment-status
-    ✓ /gpu-monitor
-    ✓ /daily-papers
-    ✓ /paper-analyze
-    ✓ /conf-search
-    ✓ /progress-report
-    ✓ /obsidian-sync
-  Done! 8 skills installed.
+    ✓ Claude /auto-experiment
+    ✓ Claude /experiment-status
+    ✓ Claude /gpu-monitor
+    ✓ Claude /daily-papers
+    ✓ Claude /paper-analyze
+    ✓ Claude /conf-search
+    ✓ Claude /progress-report
+    ✓ Claude /obsidian-sync
+    ✓ Codex $auto-experiment
+    ...
+  Done! 8 Claude commands and 8 Codex skills installed.
 ```
 
 ### Step 3: Choose Your LLM Provider
@@ -161,8 +166,8 @@ Ask the user two questions:
 
 | Provider value | Vendor | Billing | Auth |
 |----------------|--------|---------|------|
-| `anthropic` | Anthropic | Per-token API | `ANTHROPIC_API_KEY` env var |
-| `openai` | OpenAI | Per-token API | `OPENAI_API_KEY` env var |
+| `anthropic` | Anthropic-compatible | Per-token API | `ANTHROPIC_API_KEY` or custom env |
+| `openai` | OpenAI-compatible | Per-token API | `OPENAI_API_KEY` or custom env |
 | `claude_cli` | Anthropic | **Flat-rate subscription** | `claude` CLI installed + logged in |
 | `codex_cli` | OpenAI | **Flat-rate subscription** | `codex` CLI installed + logged in |
 
@@ -178,6 +183,36 @@ Default is `anthropic`. To switch, edit `config.yaml`:
 agent:
   provider: "openai"            # or "anthropic" / "claude_cli" / "codex_cli"
   model: "codex-5.3"            # or claude-sonnet-4-6 / claude-opus-4-6 / gpt-5.4
+  base_url: ""                  # optional compatible endpoint override
+  api_key_env: ""               # optional custom key env var
+  auth_token_env: ""            # optional custom bearer token env var
+```
+
+Compatible API examples
+(illustrative only in this repo — these endpoint/model combinations have not
+been live-smoke-tested here):
+
+```yaml
+# Qwen / DashScope
+agent:
+  provider: "openai"
+  model: "qwen-plus"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key_env: "DASHSCOPE_API_KEY"
+
+# GLM / BigModel
+agent:
+  provider: "openai"
+  model: "glm-4.5"
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  api_key_env: "ZHIPUAI_API_KEY"
+
+# MiniMax via OpenAI-compatible endpoint
+agent:
+  provider: "openai"
+  model: "MiniMax-M1"
+  base_url: "https://api.minimaxi.com/v1"
+  api_key_env: "MINIMAX_API_KEY"
 ```
 
 **Subscription mode (`claude_cli` / `codex_cli`)** shells out to the headless

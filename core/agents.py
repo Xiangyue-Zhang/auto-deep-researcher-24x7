@@ -19,6 +19,7 @@ tool-use protocol, and the CLI providers are simply text oracles.
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Optional
@@ -77,13 +78,23 @@ class AgentDispatcher:
     }
 
     # Supported providers:
-    #   "anthropic"  — Anthropic SDK, per-token API billing (needs ANTHROPIC_API_KEY)
-    #   "openai"     — OpenAI SDK, per-token API billing (needs OPENAI_API_KEY)
+    #   "anthropic"  — Anthropic-compatible SDK endpoint (default auth env: ANTHROPIC_API_KEY)
+    #   "openai"     — OpenAI-compatible SDK endpoint (default auth env: OPENAI_API_KEY)
     #   "claude_cli" — `claude -p` subprocess, uses Claude Code / Pro / Max subscription
     #   "codex_cli"  — `codex exec` subprocess, uses ChatGPT Plus / Pro subscription
     SUPPORTED_PROVIDERS = ("anthropic", "openai", "claude_cli", "codex_cli")
 
-    def __init__(self, model: str = "claude-sonnet-4-6", provider: str = "anthropic", max_steps: int = 3):
+    def __init__(
+        self,
+        model: str = "claude-sonnet-4-6",
+        provider: str = "anthropic",
+        max_steps: int = 3,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_key_env: str = "",
+        auth_token: Optional[str] = None,
+        auth_token_env: str = "",
+    ):
         if provider not in self.SUPPORTED_PROVIDERS:
             raise ValueError(
                 f"Unknown provider '{provider}'. Supported: {self.SUPPORTED_PROVIDERS}"
@@ -91,7 +102,17 @@ class AgentDispatcher:
         self.model = model
         self.provider = provider
         self.max_steps = max_steps
+        self.base_url = (base_url or "").strip() or None
+        self.api_key = api_key or self._resolve_secret(api_key_env)
+        self.auth_token = auth_token or self._resolve_secret(auth_token_env)
         self._leader_history = []
+
+    @staticmethod
+    def _resolve_secret(env_name: str) -> Optional[str]:
+        env_name = (env_name or "").strip()
+        if not env_name:
+            return None
+        return os.environ.get(env_name)
 
     def dispatch_leader(self, task: str, context: dict) -> dict:
         """Send a task to the Leader agent.
@@ -308,8 +329,8 @@ class AgentDispatcher:
     def _call_llm(self, system: str, messages: list) -> str:
         """Call the LLM. Four providers are supported.
 
-        - "anthropic":  Claude SDK, per-token API billing
-        - "openai":     OpenAI SDK, per-token API billing
+        - "anthropic":  Anthropic-compatible SDK endpoint, per-token API billing
+        - "openai":     OpenAI-compatible SDK endpoint, per-token API billing
         - "claude_cli": `claude -p` subprocess, uses Claude Code / Pro / Max subscription
         - "codex_cli":  `codex exec` subprocess, uses ChatGPT Plus / Pro subscription
 
@@ -328,11 +349,18 @@ class AgentDispatcher:
         return self._call_anthropic(system, messages)
 
     def _call_anthropic(self, system: str, messages: list) -> str:
-        """Call Anthropic Claude API."""
+        """Call an Anthropic-compatible Messages API."""
         try:
             import anthropic
 
-            client = anthropic.Anthropic()
+            client_kwargs = {}
+            if self.base_url:
+                client_kwargs["base_url"] = self.base_url
+            if self.api_key:
+                client_kwargs["api_key"] = self.api_key
+            if self.auth_token:
+                client_kwargs["auth_token"] = self.auth_token
+            client = anthropic.Anthropic(**client_kwargs)
 
             api_messages = []
             for msg in messages:
@@ -356,11 +384,16 @@ class AgentDispatcher:
             return self._call_openai(system, messages)
 
     def _call_openai(self, system: str, messages: list) -> str:
-        """Call OpenAI API (Codex 5.3 / GPT 5.4)."""
+        """Call an OpenAI-compatible chat completions API."""
         try:
             import openai
 
-            client = openai.OpenAI()
+            client_kwargs = {}
+            if self.base_url:
+                client_kwargs["base_url"] = self.base_url
+            if self.api_key:
+                client_kwargs["api_key"] = self.api_key
+            client = openai.OpenAI(**client_kwargs)
 
             # Map model name if it's an Anthropic model name
             model = self.MODEL_MAP.get(self.model, self.model) if self.provider != "openai" else self.model

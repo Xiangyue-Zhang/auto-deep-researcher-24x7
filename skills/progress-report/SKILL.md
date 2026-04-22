@@ -3,9 +3,11 @@ name: progress-report
 description: "Generate structured research progress reports"
 ---
 
-# /progress-report
+# progress-report
 
 Generate a structured progress report for the current research project.
+
+Invoke as `/progress-report` in Claude Code or `$progress-report` in Codex.
 
 ## Behavior
 
