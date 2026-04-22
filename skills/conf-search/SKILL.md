@@ -3,15 +3,16 @@ name: conf-search
 description: "Search papers from top AI/ML conferences"
 ---
 
-# /conf-search
+# conf-search
 
 Search for papers from top venues.
 
 ## Usage
 
 ```
-/conf-search --venue CVPR2025 --query "gesture generation"
-/conf-search --venue NeurIPS2025 --query "diffusion models"
+Claude Code: /conf-search --venue CVPR2025 --query "gesture generation"
+Claude Code: /conf-search --venue NeurIPS2025 --query "diffusion models"
+Codex: $conf-search
 ```
 
 ## Supported Venues

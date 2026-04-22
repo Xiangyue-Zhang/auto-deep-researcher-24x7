@@ -18,8 +18,8 @@ execution:
 
 agent:
   # Provider:
-  #   "anthropic"  — SDK, per-token API billing (ANTHROPIC_API_KEY)
-  #   "openai"     — SDK, per-token API billing (OPENAI_API_KEY)
+  #   "anthropic"  — Anthropic-compatible SDK endpoint (default auth env: ANTHROPIC_API_KEY)
+  #   "openai"     — OpenAI-compatible SDK endpoint (default auth env: OPENAI_API_KEY)
   #   "claude_cli" — subprocess, reuses Claude Code / Pro / Max subscription
   #   "codex_cli"  — subprocess, reuses ChatGPT Plus / Pro subscription
   #
@@ -40,9 +40,13 @@ agent:
   # Model selection per provider:
   #   anthropic:  claude-sonnet-4-6 (fast) | claude-opus-4-6 (strongest)
   #   openai:     codex-5.3 (fast)         | gpt-5.4 (strongest)
+  #                or any OpenAI-compatible model id such as qwen / glm / minimax
   #   claude_cli: whichever model your `claude` CLI is configured to use
   #   codex_cli:  whichever model your `codex` CLI is configured to use
   model: "claude-sonnet-4-6"
+  base_url: ""                    # Optional compatible API endpoint override
+  api_key_env: ""                 # Optional custom key env, e.g. DASHSCOPE_API_KEY
+  auth_token_env: ""              # Optional bearer-token env for anthropic-compatible endpoints
 
   max_cycles: -1                  # -1 = run forever
   max_steps_per_cycle: 3          # Max worker dispatches per cycle

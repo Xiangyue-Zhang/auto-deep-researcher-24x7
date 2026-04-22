@@ -3,15 +3,16 @@ name: experiment-status
 description: "Check status of running autonomous experiment loops"
 ---
 
-# /experiment-status
+# experiment-status
 
 Check the current status of your autonomous experiment agent.
 
 ## Usage
 
 ```
-/experiment-status
-/experiment-status --project /path/to/project
+Claude Code: /experiment-status
+Claude Code: /experiment-status --project /path/to/project
+Codex: $experiment-status
 ```
 
 ## Behavior

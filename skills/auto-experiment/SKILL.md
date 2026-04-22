@@ -1,10 +1,9 @@
 ---
 name: auto-experiment
 description: "Launch an autonomous THINK→EXECUTE→REFLECT experiment loop on a GPU project"
-argument-hint: "[--project <path>] [--gpu <id>] [--max-cycles <n>]"
 ---
 
-# /auto-experiment
+# auto-experiment
 
 Launch an autonomous experiment agent that runs your deep learning experiments 24/7.
 
@@ -24,9 +23,10 @@ This skill starts a **THINK → EXECUTE → REFLECT** loop that:
 ## Usage
 
 ```
-/auto-experiment
-/auto-experiment --project /path/to/my_project --gpu 0
-/auto-experiment --project . --max-cycles 5
+Claude Code: /auto-experiment
+Claude Code: /auto-experiment --project /path/to/my_project --gpu 0
+Claude Code: /auto-experiment --project . --max-cycles 5
+Codex: $auto-experiment
 ```
 
 ## Prerequisites
@@ -59,7 +59,11 @@ Override default agent settings:
 
 ```yaml
 agent:
+  provider: "anthropic"    # or "openai" / "claude_cli" / "codex_cli"
   model: "claude-sonnet-4-6"
+  base_url: ""             # optional compatible endpoint override
+  api_key_env: ""          # optional custom key env var
+  auth_token_env: ""       # optional custom bearer token env var
   max_cycles: -1          # -1 = unlimited
   max_steps_per_cycle: 3  # max sub-agent dispatches per cycle
   cooldown_interval: 300  # 5 min smart polling
@@ -75,6 +79,10 @@ monitor:
 experiment:
   mandatory_dry_run: true
 ```
+
+If the user wants a compatible API endpoint instead of the official Anthropic
+or OpenAI API, keep the same `provider` values and set `base_url` plus a custom
+`api_key_env`. Do not invent provider names like `qwen` or `glm`.
 
 Optional remote execution over SSH:
 

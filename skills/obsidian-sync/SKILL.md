@@ -1,19 +1,19 @@
 ---
 name: obsidian-sync
 description: "Refresh Obsidian dashboard and daily notes from current experiment state"
-argument-hint: "[--project <path>] [--dashboard-only] [--daily-only]"
 ---
 
-# /obsidian-sync
+# obsidian-sync
 
 Refresh progress notes for a Deep Researcher project.
 
 ## Usage
 
 ```bash
-/obsidian-sync --project /path/to/project
-/obsidian-sync --project /path/to/project --dashboard-only
-/obsidian-sync --project /path/to/project --daily-only
+Claude Code: /obsidian-sync --project /path/to/project
+Claude Code: /obsidian-sync --project /path/to/project --dashboard-only
+Claude Code: /obsidian-sync --project /path/to/project --daily-only
+Codex: $obsidian-sync
 ```
 
 ## Behavior

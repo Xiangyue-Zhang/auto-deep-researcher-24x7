@@ -3,15 +3,16 @@ name: gpu-monitor
 description: "Check GPU status, running experiments, and available resources"
 ---
 
-# /gpu-monitor
+# gpu-monitor
 
 Quick GPU status check for experiment management.
 
 ## Usage
 
 ```
-/gpu-monitor
-/gpu-monitor --server user@remote-host
+Claude Code: /gpu-monitor
+Claude Code: /gpu-monitor --server user@remote-host
+Codex: $gpu-monitor
 ```
 
 ## Behavior

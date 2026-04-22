@@ -1,0 +1,4 @@
+interface:
+  display_name: "Daily Papers"
+  short_description: "Fetch daily arXiv recommendations and deduplicate them"
+  default_prompt: "Use $daily-papers to generate daily arXiv recommendations relevant to the current research direction."
