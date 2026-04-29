@@ -24,6 +24,12 @@ import re
 from pathlib import Path
 from typing import Optional
 
+# json_repair for lenient JSON parsing of LLM output
+try:
+    from json_repair import repair_json as _repair_json
+except ImportError:
+    _repair_json = None
+
 logger = logging.getLogger("autoresearcher.agents")
 
 
@@ -260,13 +266,23 @@ class AgentDispatcher:
         """
         stripped = _FENCED_BLOCK_RE.sub("", text or "")
         calls: list[dict] = []
+
+        _fix_json = _repair_json if _repair_json is not None else (lambda x: x)
+
         for match in _TOOL_CALL_RE.finditer(stripped):
             body = match.group(1)
             try:
                 parsed = json.loads(body)
-            except json.JSONDecodeError as exc:
-                logger.warning(f"Skipping malformed tool_call block: {exc}")
-                continue
+            except json.JSONDecodeError:
+                # Fallback: try json_repair for lenient parsing
+                try:
+                    fixed = _fix_json(body)
+                    parsed = json.loads(fixed) if fixed and fixed.strip() else None
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    logger.warning(
+                        f"Skipping malformed tool_call block (even after repair): {body[:200]}"
+                    )
+                    continue
             if isinstance(parsed, dict) and parsed.get("name"):
                 calls.append(parsed)
             else:
@@ -360,7 +376,21 @@ class AgentDispatcher:
                 client_kwargs["api_key"] = self.api_key
             if self.auth_token:
                 client_kwargs["auth_token"] = self.auth_token
-            client = anthropic.Anthropic(**client_kwargs)
+            # When using auth_token without api_key, prevent the SDK from
+            # reading an empty ANTHROPIC_API_KEY env var (sends empty
+            # x-api-key header that can interfere with Bearer auth)
+            _clear_key = (
+                self.auth_token
+                and not self.api_key
+                and os.environ.get("ANTHROPIC_API_KEY", "") == ""
+            )
+            if _clear_key:
+                os.environ.pop("ANTHROPIC_API_KEY", None)
+            try:
+                client = anthropic.Anthropic(**client_kwargs)
+            finally:
+                if _clear_key:
+                    os.environ["ANTHROPIC_API_KEY"] = ""
 
             api_messages = []
             for msg in messages:
@@ -377,7 +407,10 @@ class AgentDispatcher:
             }
 
             response = client.messages.create(**kwargs)
-            return response.content[0].text
+            for block in response.content:
+                if hasattr(block, "text"):
+                    return block.text
+            return ""
 
         except ImportError:
             logger.warning("anthropic package not installed. Trying openai fallback.")
