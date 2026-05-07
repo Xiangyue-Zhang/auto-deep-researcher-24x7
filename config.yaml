@@ -20,6 +20,7 @@ agent:
   # Provider:
   #   "anthropic"  — Anthropic-compatible SDK endpoint (default auth env: ANTHROPIC_API_KEY)
   #   "openai"     — OpenAI-compatible SDK endpoint (default auth env: OPENAI_API_KEY)
+  #   "litellm"    — LiteLLM AI gateway, 100+ providers via unified SDK (pip install litellm)
   #   "claude_cli" — subprocess, reuses Claude Code / Pro / Max subscription
   #   "codex_cli"  — subprocess, reuses ChatGPT Plus / Pro subscription
   #

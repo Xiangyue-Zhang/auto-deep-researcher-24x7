@@ -82,7 +82,7 @@ class AgentDispatcher:
     #   "openai"     — OpenAI-compatible SDK endpoint (default auth env: OPENAI_API_KEY)
     #   "claude_cli" — `claude -p` subprocess, uses Claude Code / Pro / Max subscription
     #   "codex_cli"  — `codex exec` subprocess, uses ChatGPT Plus / Pro subscription
-    SUPPORTED_PROVIDERS = ("anthropic", "openai", "claude_cli", "codex_cli")
+    SUPPORTED_PROVIDERS = ("anthropic", "openai", "litellm", "claude_cli", "codex_cli")
 
     def __init__(
         self,
@@ -346,6 +346,8 @@ class AgentDispatcher:
             return self._call_codex_cli(system, messages)
         if self.provider == "openai":
             return self._call_openai(system, messages)
+        if self.provider == "litellm":
+            return self._call_litellm(system, messages)
         return self._call_anthropic(system, messages)
 
     def _call_anthropic(self, system: str, messages: list) -> str:
@@ -416,6 +418,41 @@ class AgentDispatcher:
         except ImportError:
             logger.warning("openai package not installed. Using mock response.")
             return json.dumps({"action": "wait", "reason": "LLM not available"})
+
+    def _call_litellm(self, system: str, messages: list) -> str:
+        """Call any LLM provider via the LiteLLM SDK.
+
+        Supports 100+ providers through a unified interface. Model strings
+        use the provider/model format, e.g. ``anthropic/claude-sonnet-4-20250514``,
+        ``openai/gpt-4o``, ``azure/gpt-4o``, ``bedrock/anthropic.claude-3-haiku``.
+        """
+        try:
+            import litellm
+
+            api_messages = [{"role": "system", "content": system}]
+            for msg in messages:
+                api_messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"],
+                })
+
+            kwargs = {
+                "model": self.model,
+                "messages": api_messages,
+                "max_tokens": 4096,
+                "drop_params": True,
+            }
+            if self.api_key:
+                kwargs["api_key"] = self.api_key
+            if self.base_url:
+                kwargs["api_base"] = self.base_url
+
+            response = litellm.completion(**kwargs)
+            return response.choices[0].message.content
+
+        except ImportError:
+            logger.warning("litellm package not installed. Trying openai fallback.")
+            return self._call_openai(system, messages)
 
     @staticmethod
     def _flatten_for_cli(system: str, messages: list) -> str:
