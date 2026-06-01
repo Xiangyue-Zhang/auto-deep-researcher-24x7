@@ -138,11 +138,18 @@
 ### Leader-Worker 에이전트 시스템
 
 - **Leader**: 중앙 의사결정자 (사이클 내에서 대화 이력 유지)
-- **Idea Agent**: 문헌 조사 · 가설 수립 (4 tools)
-- **Code Agent**: 실험 구현 · 실행 (5 tools)
-- **Writing Agent**: 리포트 · 논문 작성 (3 tools)
+- **Idea Agent**: 문헌 조사 · 가설 수립 (5 tools)
+- **Code Agent**: 실험 구현 · 실행 (7 tools)
+- **Writing Agent**: 리포트 · 논문 작성 (4 tools)
 
 동시에 가동되는 Worker는 단 하나뿐. 나머지는 토큰 비용 0.
+
+### v2.0 새 기능 (2026-06-01)
+
+- **코드 이해 도구**: `search_code`(정규식 전체 검색), `list_tree`(재귀 디렉터리 트리), `read_file` 줄 범위 읽기(큰 파일이 잘리지 않음).
+- **문헌 도구**: `get_paper`(논문 상세 + 인용/피인용 스노우볼), `search_arxiv`(최신 프리프린트).
+- **자율 레이어(추가적 · 기본 동작 불변)**: 실험 원장 `experiments.jsonl` · 정체 감지 · DEAD_ENDS/INSIGHTS 저널 · 위반 스캔 · 페이즈 게이트 · 번아웃 방지 레이트 제한(`max_cycles_per_hour`).
+- 모든 신호는 THINK/REFLECT 계획 컨텍스트에 주입. 로컬과 SSH 동일 동작. GPU/네트워크 없이 단위 테스트 가능.
 
 ### 2계층 메모리 시스템 (상수 크기)
 
