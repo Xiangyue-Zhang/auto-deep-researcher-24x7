@@ -37,14 +37,28 @@
 
 ## Recent Updates
 
-**2026-06-01 — v2 autonomy upgrade**
-- **Experiment ledger**: every cycle's hypothesis, metrics, and outcome are now recorded to an append-only `workspace/experiments.jsonl`. It survives controller crashes, costs zero tokens, and gives the agent persistent memory of what it already tried (the recent history is fed back into planning).
-- **Data-driven stagnation signal**: the planner is told, from the ledger's metric trajectory, whether results are still improving or have stalled — instead of only a binary repeat-counter.
-- **Append-only research journals**: `DEAD_ENDS.md` (approaches that failed — do not retry) and `INSIGHTS.md` (durable observations) are never compacted; they rotate to dated backups when large, so hard-won history is never silently dropped.
-- **Zero-cost violation scanner + advisory phase gate**: surface stuck/stale states and whether a baseline metric bar is met, all as pure functions over state + ledger.
-- **Proactive anti-burn rate limiting**: optional `max_cycles_per_hour` cap protects budget when the agent is stuck in a loop.
-- All v2 features are additive and default-preserving (the gate and rate limit are opt-in), and everything is unit-tested without a GPU or network.
-- Also: stronger codebase comprehension (`list_tree`, `search_code`, `read_file` line-ranges) and literature discovery (`get_paper` reference/citation snowballing, `search_arxiv`), with full local↔SSH parity.
+**2026-06-01 — v2.0 (major update)**
+
+This release gives the agent (a) a persistent, queryable memory of its own
+experiments, (b) explicit progress/quality/safety signals derived from that
+memory, and (c) much stronger code- and literature-reading tools. Every change
+is additive and backward-compatible — existing projects keep working unchanged,
+the new gate and rate limit are opt-in, and the whole suite is unit-tested
+without a GPU or network (60 → 99 tests).
+
+*New: autonomy layer*
+- **Experiment ledger** — every cycle's hypothesis, metrics, and outcome are appended to `workspace/experiments.jsonl`. Crash-safe, zero token cost, and fed back into planning so the agent remembers what it already tried. (`core/ledger.py`)
+- **Data-driven stagnation signal** — the planner is told, from the ledger's metric trajectory, whether results are still improving or have stalled (set `ledger.metric_key`), instead of only a binary repeat-counter.
+- **Append-only research journals** — `DEAD_ENDS.md` (failed approaches — do not retry) and `INSIGHTS.md` (durable observations). Never compacted; rotated to dated backups when large, so history is never silently dropped. (`core/journal.py`)
+- **Zero-cost violation scanner + advisory phase gate** — surface stuck/stale states and whether a baseline metric bar is met, as pure functions over state + ledger. (`core/safety.py`, `core/ledger.py`)
+- **Proactive anti-burn rate limiting** — optional `agent.max_cycles_per_hour` cap protects budget when the agent is stuck in a loop.
+
+*New: agent tools*
+- **Code comprehension** — `search_code` (regex grep across the workspace), `list_tree` (recursive, depth-limited repo map), and `read_file` line ranges so large files are no longer blindly truncated. Symlink-safe (never escapes the workspace).
+- **Literature** — `get_paper` (paper details + reference/citation snowballing) and `search_arxiv` (freshest preprints), alongside the existing Semantic Scholar search.
+- All new tools work identically in **local and SSH** execution modes.
+
+*Config:* new optional sections `ledger:`, `stagnation:`, `journal:`, `safety:`, `gates:`, and `agent.max_cycles_per_hour` — all default to current behavior. See `config.yaml`.
 
 **2026-04-22**
 - Added explicit compatible-API configuration, dual Claude/Codex skill installation, and safer skill-installer ownership checks.
