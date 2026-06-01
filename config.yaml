@@ -52,6 +52,41 @@ agent:
   max_steps_per_cycle: 3          # Max worker dispatches per cycle
   cooldown_interval: 300          # Smart cooldown polling interval (seconds)
   no_progress_fallback_threshold: 3  # Back off after repeated no-progress cycles on the same plan
+  max_cycles_per_hour: 0          # Proactive anti-burn cap (0 = disabled): sleeps so the agent never exceeds this many cycles/hour
+
+# --- v2 autonomy (all additive & advisory; they enrich the THINK context) ---
+
+ledger:
+  # Append-only workspace/experiments.jsonl recording every cycle's hypothesis,
+  # metrics, and outcome. Survives crashes; zero LLM cost.
+  enabled: true
+  recent_in_context: 5            # How many recent experiments to show the leader
+  metric_key: ""                  # Primary metric to track, e.g. "accuracy"/"loss"/"fgd". Empty disables stagnation/gate signals.
+  metric_direction: "higher_better"  # "higher_better" or "lower_better"
+
+stagnation:
+  enabled: true                   # Requires ledger.metric_key
+  threshold_cycles: 3             # Flag stagnation after N measured cycles with no improvement
+  min_delta: 0.0                  # Minimum metric change that counts as improvement
+
+journal:
+  # Append-only DEAD_ENDS.md + INSIGHTS.md (never compacted; rotated to a dated
+  # .bak when oversized). The loop shows their tails to the leader.
+  enabled: true
+  max_chars: 4000                 # Rotate a journal to backup once it exceeds this
+  tail_in_context: 1500           # Chars of each journal tail to show the leader
+
+safety:
+  # Zero-cost violation scanner (pure functions over state.json + ledger).
+  enabled: true
+  fail_threshold: 3               # Flag after this many consecutive no-progress cycles
+  stale_state_hours: 6            # Flag if state has been "running" this long without an update
+
+gates:
+  # Advisory phase gate: tells the leader whether the best metric clears a bar.
+  enabled: false                  # Requires ledger.metric_key
+  threshold: 0.0
+  direction: "higher_better"
 
 memory:
   brief_max_chars: 3000           # Tier 1: PROJECT_BRIEF cap

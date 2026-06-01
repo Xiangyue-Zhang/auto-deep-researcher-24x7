@@ -129,6 +129,74 @@ class SSHExecutionBackendTests(unittest.TestCase):
             self.assertIn("escapes workspace", body["error"])
             self.assertFalse((outside / "pwned.txt").exists())
 
+    def _run_helper(self, payload):
+        proc = subprocess.run(
+            ["python3", "-c", REMOTE_HELPER],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_remote_helper_grep_tree_and_range(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            (root / "pkg").mkdir(parents=True)
+            (root / "pkg" / "m.py").write_text("def main():\n    return 1\n")
+            (root / "__pycache__").mkdir()
+            (root / "__pycache__" / "x.py").write_text("def main(): pass\n")
+
+            tree = self._run_helper(
+                {"action": "list_tree", "remote_workspace": str(root), "path": "."}
+            )
+            self.assertTrue(tree["ok"])
+            self.assertIn("pkg/", tree["result"]["entries"])
+            self.assertIn("pkg/m.py", tree["result"]["entries"])
+            self.assertNotIn("__pycache__/", tree["result"]["entries"])
+
+            grep = self._run_helper(
+                {"action": "grep_files", "remote_workspace": str(root), "pattern": "def main"}
+            )
+            self.assertTrue(grep["ok"])
+            files = {h["file"] for h in grep["result"]["hits"]}
+            self.assertEqual(files, {"pkg/m.py"})
+            self.assertEqual(grep["result"]["hits"][0]["line"], 1)
+
+            ranged = self._run_helper(
+                {
+                    "action": "read_file_range",
+                    "remote_workspace": str(root),
+                    "path": "pkg/m.py",
+                    "start_line": 2,
+                    "end_line": 2,
+                }
+            )
+            self.assertTrue(ranged["ok"])
+            self.assertEqual(ranged["result"]["content"], "2\t    return 1")
+
+    def test_remote_helper_walk_and_grep_skip_symlinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "workspace"
+            root.mkdir()
+            outside = Path(tmp) / "outside"
+            (outside / "sub").mkdir(parents=True)
+            (outside / "creds.txt").write_text("TOPSECRET token\n")
+            os.symlink(outside, root / "leakdir")
+            os.symlink(outside / "creds.txt", root / "leak.txt")
+
+            tree = self._run_helper({"action": "list_tree", "remote_workspace": str(root), "path": "."})
+            self.assertTrue(tree["ok"])
+            self.assertNotIn("leakdir/", tree["result"]["entries"])
+            self.assertNotIn("leak.txt", tree["result"]["entries"])
+
+            grep = self._run_helper(
+                {"action": "grep_files", "remote_workspace": str(root), "pattern": "TOPSECRET"}
+            )
+            self.assertTrue(grep["ok"])
+            self.assertEqual(grep["result"]["hits"], [])
+
     @patch("core.execution.shutil.which", return_value="/usr/bin/ssh")
     @patch("core.execution.subprocess.run")
     def test_validate_invokes_remote_helper(self, run_mock, _which_mock):

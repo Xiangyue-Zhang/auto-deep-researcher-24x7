@@ -20,6 +20,9 @@ from .agents import AgentDispatcher
 from .execution import build_execution_backend
 from .obsidian import ObsidianExporter
 from .tools import ToolRegistry
+from .ledger import ExperimentLedger, detect_stagnation, check_phase_gate
+from .journal import ResearchJournal
+from . import safety
 
 logger = logging.getLogger("autoresearcher")
 
@@ -71,11 +74,33 @@ class ResearchLoop:
             backend=self.execution_backend,
         )
 
+        # v2 autonomy modules: persistent experiment ledger + research journals.
+        # All are additive and advisory — they enrich the THINK context but do
+        # not change control flow unless explicitly enabled in config.
+        self._ledger_cfg = config.get("ledger", {}) or {}
+        self._stagnation_cfg = config.get("stagnation", {}) or {}
+        self._journal_cfg = config.get("journal", {}) or {}
+        self._safety_cfg = config.get("safety", {}) or {}
+        self._gates_cfg = config.get("gates", {}) or {}
+        self.ledger = (
+            ExperimentLedger(self.workspace)
+            if self._ledger_cfg.get("enabled", True)
+            else None
+        )
+        self.journal = (
+            ResearchJournal(self.workspace, max_chars=self._journal_cfg.get("max_chars", 4000))
+            if self._journal_cfg.get("enabled", True)
+            else None
+        )
+
         # State
         self.cycle_count = self._load_cycle_counter()
         self.max_cycles = agent_config.get("max_cycles", -1)
         self.cooldown = agent_config.get("cooldown_interval", 300)
         self.no_progress_fallback_threshold = agent_config.get("no_progress_fallback_threshold", 3)
+        # Proactive anti-burn: cap cycles started per rolling hour (0 = disabled).
+        self.max_cycles_per_hour = agent_config.get("max_cycles_per_hour", 0)
+        self._cycle_times_path = self.workspace / ".cycle_times"
         self._running = True
         self._no_progress_streak = 0
         self._last_no_progress_signature = ""
@@ -91,6 +116,10 @@ class ResearchLoop:
         while self._running:
             if self.max_cycles > 0 and self.cycle_count >= self.max_cycles:
                 logger.info(f"Reached max cycles ({self.max_cycles}). Stopping.")
+                break
+
+            self._throttle_if_needed()
+            if not self._running:
                 break
 
             self.cycle_count += 1
@@ -174,6 +203,7 @@ class ResearchLoop:
                     }
                 )
                 self._record_cycle_outcome(think_result, execute_result, reflect_result)
+                self._record_to_ledger(think_result, execute_result, reflect_result)
                 self._refresh_obsidian(reflect_result=reflect_result, directive=directive)
 
             except Exception as e:
@@ -201,6 +231,7 @@ class ResearchLoop:
             "cycle": self.cycle_count,
             "directive": directive,
         }
+        self._enrich_context(context)
 
         result = self.dispatcher.dispatch_leader(
             task="think",
@@ -250,6 +281,7 @@ class ResearchLoop:
             "experiment_result": execute_result,
             "cycle": self.cycle_count,
         }
+        self._enrich_context(context)
 
         result = self.dispatcher.dispatch_leader(
             task="reflect",
@@ -305,6 +337,11 @@ class ResearchLoop:
             )
             logger.warning(reason)
             self.memory.log_decision(reason)
+            if self.journal is not None:
+                task_text = " ".join(think_result.get("task", "").split())[:160]
+                self.journal.append_dead_end(
+                    f"Cycle {self.cycle_count}: repeated with no progress — {task_text}"
+                )
             return {
                 "action": "wait",
                 "reason": reason,
@@ -338,6 +375,156 @@ class ResearchLoop:
         else:
             self._last_no_progress_signature = signature
             self._no_progress_streak = 1
+
+    def _enrich_context(self, context: dict):
+        """Add advisory v2 signals (ledger / stagnation / journals / violations /
+        gate) to a leader context dict. All keys are optional and only added when
+        the corresponding feature is enabled and has something to report."""
+        if self.ledger is not None:
+            try:
+                summary = self.ledger.summary(self._ledger_cfg.get("recent_in_context", 5))
+                if summary:
+                    context["recent_experiments"] = summary
+            except Exception as exc:  # never let context-building break a cycle
+                logger.warning(f"ledger summary failed: {exc}")
+
+            metric_key = self._ledger_cfg.get("metric_key", "")
+            direction = self._ledger_cfg.get("metric_direction", "higher_better")
+
+            if metric_key and self._stagnation_cfg.get("enabled", True):
+                try:
+                    verdict = detect_stagnation(
+                        self.ledger.all(),
+                        metric_key,
+                        direction=direction,
+                        threshold_cycles=self._stagnation_cfg.get("threshold_cycles", 3),
+                        min_delta=self._stagnation_cfg.get("min_delta", 0.0),
+                    )
+                    context["progress_signal"] = self._format_stagnation(verdict)
+                except Exception as exc:
+                    logger.warning(f"stagnation detection failed: {exc}")
+
+            if metric_key and self._gates_cfg.get("enabled", False):
+                try:
+                    gate = check_phase_gate(
+                        self.ledger.all(),
+                        metric_key,
+                        threshold=self._gates_cfg.get("threshold", 0.0),
+                        direction=self._gates_cfg.get("direction", direction),
+                    )
+                    context["phase_gate"] = self._format_gate(gate)
+                except Exception as exc:
+                    logger.warning(f"phase gate check failed: {exc}")
+
+        if self.journal is not None:
+            try:
+                tail_chars = int(self._journal_cfg.get("tail_in_context", 1500))
+                dead_ends = self.journal.dead_ends_tail(tail_chars)
+                if "- [" in dead_ends:
+                    context["dead_ends"] = dead_ends.strip()
+                insights = self.journal.insights_tail(tail_chars)
+                if "- [" in insights:
+                    context["insights"] = insights.strip()
+            except Exception as exc:  # never let an advisory signal break a cycle
+                logger.warning(f"journal tail failed: {exc}")
+
+        if self._safety_cfg.get("enabled", True):
+            try:
+                violations = safety.scan_violations(
+                    self._load_state(),
+                    self._no_progress_streak,
+                    time.time(),
+                    fail_threshold=self._safety_cfg.get("fail_threshold", 3),
+                    stale_state_hours=self._safety_cfg.get("stale_state_hours", 6),
+                )
+                if violations:
+                    context["active_violations"] = "\n".join(f"- {v}" for v in violations)
+            except Exception as exc:
+                logger.warning(f"violation scan failed: {exc}")
+
+    @staticmethod
+    def _format_stagnation(verdict: dict) -> str:
+        if verdict.get("reason"):
+            return f"{verdict['reason']} (metric={verdict.get('metric_key', '')})"
+        flag = "STAGNATING" if verdict.get("stagnating") else "improving"
+        return (
+            f"{flag}: best {verdict.get('metric_key')}={verdict.get('best')}, "
+            f"{verdict.get('cycles_since_improvement')} cycle(s) since last improvement "
+            f"over {verdict.get('n_points')} measured runs."
+        )
+
+    @staticmethod
+    def _format_gate(gate: dict) -> str:
+        if gate.get("gate_met"):
+            return f"Phase gate MET (best metric={gate.get('best_metric')}). OK to pursue innovation."
+        return f"Phase gate NOT met: {gate.get('blocker_reason', 'baseline quality not reached')}."
+
+    def _record_to_ledger(self, think_result: dict, execute_result: dict, reflect_result: dict):
+        """Append this cycle's outcome to the experiment ledger and capture a
+        durable insight when the reflection produced a milestone."""
+        if self.ledger is None:
+            return
+        metrics = execute_result.get("final_metrics") or {}
+        if not isinstance(metrics, dict):
+            metrics = {}
+        status = "launched" if execute_result.get("experiment_launched") else (
+            think_result.get("action", "") or "no_experiment"
+        )
+        try:
+            self.ledger.record(
+                cycle=self.cycle_count,
+                hypothesis=think_result.get("hypothesis") or think_result.get("task", ""),
+                action=think_result.get("action", ""),
+                status=status,
+                metrics=metrics,
+                pid=execute_result.get("pid"),
+                log_file=execute_result.get("log_file", ""),
+                conclusion=reflect_result.get("milestone") or reflect_result.get("decision", ""),
+            )
+        except Exception as exc:
+            logger.warning(f"ledger record failed: {exc}")
+
+        if self.journal is not None and reflect_result.get("milestone"):
+            self.journal.append_insight(reflect_result["milestone"])
+
+    def _load_cycle_times(self) -> list:
+        if self._cycle_times_path.exists():
+            try:
+                data = json.loads(self._cycle_times_path.read_text())
+                if isinstance(data, list):
+                    return [float(t) for t in data]
+            except (json.JSONDecodeError, ValueError, TypeError):
+                return []
+        return []
+
+    def _save_cycle_times(self, timestamps: list):
+        try:
+            self._cycle_times_path.write_text(json.dumps(timestamps))
+        except OSError as exc:  # pragma: no cover - disk failure path
+            logger.warning(f"failed to persist cycle times: {exc}")
+
+    def _throttle_if_needed(self):
+        """Proactive anti-burn: sleep so the agent never exceeds
+        max_cycles_per_hour. No-op (and no state writes) when disabled."""
+        if not self.max_cycles_per_hour or self.max_cycles_per_hour <= 0:
+            return
+        now = time.time()
+        timestamps = self._load_cycle_times()
+        wait = safety.seconds_until_allowed(timestamps, now, self.max_cycles_per_hour)
+        if wait > 0:
+            logger.warning(
+                f"Anti-burn: {self.max_cycles_per_hour} cycles/hour reached; "
+                f"throttling for {int(wait)}s"
+            )
+            elapsed = 0.0
+            while elapsed < wait and self._running:
+                chunk = min(30.0, wait - elapsed)
+                time.sleep(chunk)
+                elapsed += chunk
+            now = time.time()
+        timestamps = safety.prune_timestamps(timestamps, now)
+        timestamps.append(now)
+        self._save_cycle_times(timestamps)
 
     def _smart_cooldown(self):
         """Poll at short intervals instead of fixed long wait."""

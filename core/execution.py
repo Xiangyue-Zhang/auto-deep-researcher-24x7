@@ -22,6 +22,23 @@ from typing import Optional
 logger = logging.getLogger("autoresearcher.execution")
 
 
+# Directories and files that repo-reading tools (list_tree / grep_files) skip,
+# so the agent sees source code instead of VCS metadata and build caches.
+WALK_SKIP_DIRS = {
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".idea",
+    ".ipynb_checkpoints",
+}
+# grep_files skips files larger than this (likely data/binaries, not source).
+GREP_MAX_FILE_BYTES = 2_000_000
+
+
 REMOTE_HELPER = textwrap.dedent(
     """
     import json
@@ -51,6 +68,85 @@ REMOTE_HELPER = textwrap.dedent(
         except ValueError as exc:
             raise ValueError(f"Path escapes workspace: {raw}") from exc
         return resolved
+
+
+    WALK_SKIP_DIRS = {
+        ".git", "__pycache__", "node_modules", ".venv", "venv",
+        ".mypy_cache", ".pytest_cache", ".idea", ".ipynb_checkpoints",
+    }
+    GREP_MAX_FILE_BYTES = 2000000
+
+
+    def walk_tree(root, max_depth, max_entries):
+        max_depth = max(1, int(max_depth))
+        max_entries = max(1, int(max_entries))
+        entries = []
+
+        def walk(current, depth):
+            if depth > max_depth or len(entries) >= max_entries:
+                return
+            try:
+                children = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name))
+            except OSError:
+                return
+            for child in children:
+                if len(entries) >= max_entries:
+                    return
+                if child.name in WALK_SKIP_DIRS:
+                    continue
+                if child.is_symlink():
+                    continue
+                rel = child.relative_to(root).as_posix()
+                if child.is_dir():
+                    entries.append(rel + "/")
+                    walk(child, depth + 1)
+                else:
+                    entries.append(rel)
+
+        walk(root, 1)
+        return entries
+
+
+    def grep_tree(root, base, pattern, max_results, ignore_case):
+        import re
+        if not pattern:
+            raise ValueError("Search pattern cannot be empty")
+        max_results = max(1, int(max_results))
+        flags = re.IGNORECASE if ignore_case else 0
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as exc:
+            raise ValueError("Invalid search pattern: " + str(exc))
+        targets = []
+        if root.is_file():
+            targets = [root]
+        else:
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = sorted(d for d in dirnames if d not in WALK_SKIP_DIRS)
+                for name in sorted(filenames):
+                    targets.append(pathlib.Path(dirpath) / name)
+        hits = []
+        for file_path in targets:
+            if len(hits) >= max_results:
+                break
+            try:
+                if file_path.is_symlink():
+                    continue
+                if file_path.stat().st_size > GREP_MAX_FILE_BYTES:
+                    continue
+                with open(file_path, "r", errors="strict") as handle:
+                    for lineno, line in enumerate(handle, start=1):
+                        if regex.search(line):
+                            hits.append({
+                                "file": file_path.relative_to(base).as_posix(),
+                                "line": lineno,
+                                "text": line.rstrip("\\n")[:300],
+                            })
+                            if len(hits) >= max_results:
+                                break
+            except (UnicodeDecodeError, OSError, ValueError):
+                continue
+        return hits
 
 
     def gpu_status():
@@ -97,6 +193,29 @@ REMOTE_HELPER = textwrap.dedent(
             if not path.exists():
                 raise FileNotFoundError(f"File not found: {payload['path']}")
             result = {"content": path.read_text()}
+        elif action == "read_file_range":
+            path = resolve_path(root, payload["path"])
+            if not path.exists():
+                raise FileNotFoundError(f"File not found: {payload['path']}")
+            lines = path.read_text().splitlines()
+            start = max(1, int(payload.get("start_line", 1)))
+            end_raw = payload.get("end_line")
+            end = len(lines) if end_raw is None else min(len(lines), int(end_raw))
+            if end < start:
+                result = {"content": ""}
+            else:
+                selected = lines[start - 1:end]
+                result = {"content": "\\n".join(str(start + i) + "\\t" + t for i, t in enumerate(selected))}
+        elif action == "list_tree":
+            raw = payload.get("path", ".")
+            base = root if raw in ("", ".") else resolve_path(root, raw)
+            if not base.is_dir():
+                raise NotADirectoryError("Not a directory: " + str(raw))
+            result = {"entries": walk_tree(base, payload.get("max_depth", 3), payload.get("max_entries", 300))}
+        elif action == "grep_files":
+            raw = payload.get("path", ".")
+            base = root if raw in ("", ".") else resolve_path(root, raw)
+            result = {"hits": grep_tree(base, root, payload["pattern"], payload.get("max_results", 50), payload.get("ignore_case", False))}
         elif action == "write_file":
             path = resolve_path(root, payload["path"])
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -209,6 +328,91 @@ def _resolve_under_root(root: Path, rel_path: str) -> Path:
     return resolved
 
 
+def _walk_tree(root: Path, base: Path, max_depth: int, max_entries: int) -> list[str]:
+    """Depth-limited recursive listing relative to `base`, skipping noise dirs."""
+    max_depth = max(1, int(max_depth))
+    max_entries = max(1, int(max_entries))
+    entries: list[str] = []
+
+    def walk(current: Path, depth: int):
+        if depth > max_depth or len(entries) >= max_entries:
+            return
+        try:
+            children = sorted(current.iterdir(), key=lambda p: (p.is_file(), p.name))
+        except (PermissionError, OSError):
+            return
+        for child in children:
+            if len(entries) >= max_entries:
+                return
+            if child.name in WALK_SKIP_DIRS:
+                continue
+            # Never follow or list symlinks: they can point outside the
+            # workspace, which would defeat the sandbox enforced elsewhere.
+            if child.is_symlink():
+                continue
+            rel = child.relative_to(base).as_posix()
+            if child.is_dir():
+                entries.append(rel + "/")
+                walk(child, depth + 1)
+            else:
+                entries.append(rel)
+
+    walk(root, 1)
+    return entries
+
+
+def _grep_tree(root: Path, base: Path, pattern: str, max_results: int, ignore_case: bool) -> list[dict]:
+    """Scan text files under `root` for `pattern`, returning file/line/text hits."""
+    import re as _re
+
+    if not pattern:
+        raise ValueError("Search pattern cannot be empty")
+    max_results = max(1, int(max_results))
+    flags = _re.IGNORECASE if ignore_case else 0
+    try:
+        regex = _re.compile(pattern, flags)
+    except _re.error as exc:
+        raise ValueError(f"Invalid search pattern: {exc}") from exc
+
+    targets: list[Path] = []
+    if root.is_file():
+        targets = [root]
+    else:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(d for d in dirnames if d not in WALK_SKIP_DIRS)
+            for name in sorted(filenames):
+                targets.append(Path(dirpath) / name)
+
+    hits: list[dict] = []
+    for file_path in targets:
+        if len(hits) >= max_results:
+            break
+        try:
+            # os.walk does not descend symlinked dirs, but symlinked *files*
+            # still appear and would otherwise be opened — that could read a
+            # file outside the workspace. Skip any symlink target.
+            if file_path.is_symlink():
+                continue
+            if file_path.stat().st_size > GREP_MAX_FILE_BYTES:
+                continue
+            with open(file_path, "r", errors="strict") as handle:
+                for lineno, line in enumerate(handle, start=1):
+                    if regex.search(line):
+                        hits.append(
+                            {
+                                "file": file_path.relative_to(base).as_posix(),
+                                "line": lineno,
+                                "text": line.rstrip("\n")[:300],
+                            }
+                        )
+                        if len(hits) >= max_results:
+                            break
+        except (UnicodeDecodeError, PermissionError, OSError, ValueError):
+            # Binary file, unreadable, or escaped base — skip silently.
+            continue
+    return hits
+
+
 class ExecutionBackend:
     """Abstract execution backend."""
 
@@ -218,10 +422,25 @@ class ExecutionBackend:
     def read_file(self, path: str) -> str:
         raise NotImplementedError
 
+    def read_file_range(self, path: str, start_line: int = 1, end_line: Optional[int] = None) -> str:
+        raise NotImplementedError
+
     def write_file(self, path: str, content: str) -> dict:
         raise NotImplementedError
 
     def list_files(self, path: str = ".") -> list[str]:
+        raise NotImplementedError
+
+    def list_tree(self, path: str = ".", max_depth: int = 3, max_entries: int = 300) -> list[str]:
+        raise NotImplementedError
+
+    def grep_files(
+        self,
+        pattern: str,
+        path: str = ".",
+        max_results: int = 50,
+        ignore_case: bool = False,
+    ) -> list[dict]:
         raise NotImplementedError
 
     def run_command(self, argv: list[str], timeout: int = 120, env: Optional[dict] = None) -> dict:
@@ -255,6 +474,18 @@ class LocalExecutionBackend(ExecutionBackend):
             raise FileNotFoundError(f"File not found: {path}")
         return file_path.read_text()
 
+    def read_file_range(self, path: str, start_line: int = 1, end_line: Optional[int] = None) -> str:
+        file_path = _resolve_under_root(self.workspace, normalize_relative_path(path))
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        lines = file_path.read_text().splitlines()
+        start = max(1, int(start_line))
+        end = len(lines) if end_line is None else min(len(lines), int(end_line))
+        if end < start:
+            return ""
+        selected = lines[start - 1 : end]
+        return "\n".join(f"{start + i}\t{text}" for i, text in enumerate(selected))
+
     def write_file(self, path: str, content: str) -> dict:
         rel_path = normalize_relative_path(path)
         file_path = _resolve_under_root(self.workspace, rel_path)
@@ -268,6 +499,24 @@ class LocalExecutionBackend(ExecutionBackend):
         if not dir_path.is_dir():
             raise NotADirectoryError(f"Not a directory: {path}")
         return sorted([f.name for f in dir_path.iterdir()])[:100]
+
+    def list_tree(self, path: str = ".", max_depth: int = 3, max_entries: int = 300) -> list[str]:
+        rel_path = normalize_relative_path(path)
+        root = self.workspace if rel_path == "." else _resolve_under_root(self.workspace, rel_path)
+        if not root.is_dir():
+            raise NotADirectoryError(f"Not a directory: {path}")
+        return _walk_tree(root, root, max_depth=max_depth, max_entries=max_entries)
+
+    def grep_files(
+        self,
+        pattern: str,
+        path: str = ".",
+        max_results: int = 50,
+        ignore_case: bool = False,
+    ) -> list[dict]:
+        rel_path = normalize_relative_path(path)
+        root = self.workspace if rel_path == "." else _resolve_under_root(self.workspace, rel_path)
+        return _grep_tree(root, self.workspace, pattern, max_results=max_results, ignore_case=ignore_case)
 
     def run_command(self, argv: list[str], timeout: int = 120, env: Optional[dict] = None) -> dict:
         try:
@@ -379,12 +628,47 @@ class SSHExecutionBackend(ExecutionBackend):
         payload = self._invoke("read_file", path=normalize_relative_path(path))
         return payload["content"]
 
+    def read_file_range(self, path: str, start_line: int = 1, end_line: Optional[int] = None) -> str:
+        payload = self._invoke(
+            "read_file_range",
+            path=normalize_relative_path(path),
+            start_line=int(start_line),
+            end_line=None if end_line is None else int(end_line),
+        )
+        return payload["content"]
+
     def write_file(self, path: str, content: str) -> dict:
         return self._invoke("write_file", path=normalize_relative_path(path), content=content)
 
     def list_files(self, path: str = ".") -> list[str]:
         payload = self._invoke("list_files", path=normalize_relative_path(path))
         return payload["files"]
+
+    def list_tree(self, path: str = ".", max_depth: int = 3, max_entries: int = 300) -> list[str]:
+        payload = self._invoke(
+            "list_tree",
+            path=normalize_relative_path(path),
+            max_depth=int(max_depth),
+            max_entries=int(max_entries),
+        )
+        return payload["entries"]
+
+    def grep_files(
+        self,
+        pattern: str,
+        path: str = ".",
+        max_results: int = 50,
+        ignore_case: bool = False,
+    ) -> list[dict]:
+        payload = self._invoke(
+            "grep_files",
+            pattern=pattern,
+            path=normalize_relative_path(path),
+            max_results=int(max_results),
+            ignore_case=bool(ignore_case),
+            transport_timeout=60,
+        )
+        return payload["hits"]
 
     def run_command(self, argv: list[str], timeout: int = 120, env: Optional[dict] = None) -> dict:
         return self._invoke(

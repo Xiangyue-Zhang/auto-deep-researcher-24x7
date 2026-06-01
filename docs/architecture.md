@@ -79,6 +79,27 @@ The main orchestrator. Runs the THINK → EXECUTE → REFLECT cycle indefinitely
 2. Decisions: Keep only last 15 entries
 3. Total log: Hard cap at 2,000 chars (aggressive compaction if exceeded)
 
+### 3b. Experiment Ledger & Research Journals (`core/ledger.py`, `core/journal.py`)
+
+The compacting two-tier memory keeps context small but **drops detail**. The v2
+autonomy layer adds durable, append-only records that complement it:
+
+- **Experiment ledger** (`workspace/experiments.jsonl`): one JSON line per cycle
+  (hypothesis, action, status, metrics, pid, conclusion). Append-only, crash-safe,
+  queryable, zero LLM cost. Pure readers derive signals from it:
+  - `summary(n)` — recent experiments block for the THINK context
+  - `detect_stagnation(...)` — has the tracked metric stopped improving?
+  - `check_phase_gate(...)` — does the best metric clear a configured bar?
+- **Research journals**: `DEAD_ENDS.md` (failed approaches — do not retry) and
+  `INSIGHTS.md` (durable observations). Never compacted; rotated to a dated
+  `.bak` when oversized, so history is preserved, not lost.
+
+These signals (plus a zero-cost violation scan from `core/safety.py`) are injected
+into the leader's THINK/REFLECT context by `loop._enrich_context`. They are
+**advisory and additive**: with default config they enrich planning without
+changing control flow. `core/safety.py` also provides the proactive anti-burn
+rate limiter (`seconds_until_allowed`) used by `loop._throttle_if_needed`.
+
 ### 4. Experiment Monitor (`core/monitor.py`)
 
 **The zero-cost innovation.** During training:
@@ -108,12 +129,21 @@ The SSH backend is intentionally narrow in v1:
 **Per-agent minimal tool sets** reduce token overhead:
 - Each tool definition is ~200 tokens in the API call
 - 15 tools = 3,000 extra tokens per call
-- 4 tools = 800 extra tokens per call
-- Over 100 API calls/day, that's 220K tokens saved
+- 5 tools = 1,000 extra tokens per call
+- Over 100 API calls/day, that's still ~200K tokens saved
+
+Tools are grouped so each worker only carries what it needs:
+- **Codebase comprehension** (code/writing agents): `list_tree` (recursive,
+  depth-limited repo map), `search_code` (regex grep across files), and
+  `read_file` with optional line ranges for large files.
+- **Literature** (idea agent): `search_papers` (Semantic Scholar),
+  `search_arxiv` (freshest preprints), and `get_paper` (full details plus
+  reference/citation snowballing).
 
 ToolRegistry still owns command parsing and path safety. It validates
 relative paths and parses shell text into argv before delegating execution
-to the selected backend.
+to the selected backend. The repo-reading tools skip `.git`, `__pycache__`,
+and similar noise directories and run identically in local and SSH modes.
 
 ### 7. Tool-Use Protocol (`core/agents.py::dispatch_worker`)
 

@@ -414,9 +414,9 @@ one configured remote host, while the controller state stays local.
 
 ### Agent Architecture
 - **Leader**: decides what to do (3 tools)
-- **Idea Agent**: searches papers (4 tools)
-- **Code Agent**: writes code & launches experiments (5 tools)
-- **Writing Agent**: generates reports (3 tools)
+- **Idea Agent**: literature search & hypotheses — `search_papers`, `search_arxiv`, `get_paper` (reference/citation snowballing), plus read/write (5 tools)
+- **Code Agent**: writes code & launches experiments — adds `list_tree` (recursive repo map) and `search_code` (regex grep) for codebase comprehension (7 tools)
+- **Writing Agent**: generates reports — read/write/list plus `search_code` (4 tools)
 - Only 1 worker active at a time, others cost $0
 
 ### Tool-Use Protocol (provider-agnostic)
