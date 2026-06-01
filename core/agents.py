@@ -54,17 +54,20 @@ class AgentDispatcher:
         "idea": {
             "prompt_file": "idea_agent.md",
             "max_turns": 12,
-            "tools": ["search_papers", "get_paper", "write_file", "read_file"],
+            "tools": ["search_papers", "search_arxiv", "get_paper", "write_file", "read_file"],
         },
         "code": {
             "prompt_file": "code_agent.md",
             "max_turns": 40,
-            "tools": ["run_shell", "launch_experiment", "write_file", "read_file", "list_files"],
+            "tools": [
+                "run_shell", "launch_experiment", "write_file",
+                "read_file", "list_files", "list_tree", "search_code",
+            ],
         },
         "writing": {
             "prompt_file": "writing_agent.md",
             "max_turns": 30,
-            "tools": ["write_file", "read_file", "list_files"],
+            "tools": ["write_file", "read_file", "list_files", "search_code"],
         },
     }
 
@@ -591,6 +594,20 @@ class AgentDispatcher:
 
         parts.append(f"## Project Brief\n{context.get('brief', 'N/A')}\n")
         parts.append(f"## Memory Log\n{context.get('memory_log', 'N/A')}\n")
+
+        # Optional v2 advisory signals injected by the loop's _enrich_context.
+        # Rendered only when present so older call sites are unaffected.
+        for label, key in (
+            ("Active Violations", "active_violations"),
+            ("Phase Gate", "phase_gate"),
+            ("Progress Signal", "progress_signal"),
+            ("Recent Experiments", "recent_experiments"),
+            ("Dead Ends (do NOT retry these)", "dead_ends"),
+            ("Durable Insights", "insights"),
+        ):
+            if context.get(key):
+                parts.append(f"## {label}\n{context[key]}\n")
+
         parts.append(f"## Cycle: {context.get('cycle', 'N/A')}\n")
 
         if context.get("experiment_result"):
