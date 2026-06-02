@@ -37,19 +37,28 @@
 
 ## Recent Updates
 
-**2026-06-02 — Slurm execution backend**
+**2026-06-02 — Slurm execution backend + truthful experiment outcomes**
 
-- Added `execution.mode: "slurm"` so the agent can drive experiments on a Slurm
-  cluster. The controller stays local; training is submitted to the login node
-  with `sbatch --parsable` over a single transient SSH call that exits
-  immediately — **no process is ever left running on the login node**. `sacct`
-  is the sole liveness authority (Slurm enforces `--time`), GPU status is read
-  from the partition's `squeue` occupancy, and two bounds inside the liveness
-  check (consecutive-unknown grace + a `--time`-derived wall-clock cap)
-  guarantee the monitor loop terminates even if the cluster goes unreachable.
-  File and repo-reading ops reuse the SSH path (the login node shares the NFS
-  workspace). Additive and opt-in; `local`/`ssh` behavior is unchanged.
-  (`core/execution.py`, +19 unit tests, no cluster required)
+- **Slurm execution backend** — added `execution.mode: "slurm"` so the agent can
+  drive experiments on a Slurm cluster. The controller stays local; training is
+  submitted to the login node with `sbatch --parsable` over a single transient
+  SSH call that exits immediately — **no process is ever left running on the
+  login node**. `sacct` is the sole liveness authority (Slurm enforces `--time`),
+  GPU status is read from the partition's `squeue` occupancy, and two bounds
+  inside the liveness check (consecutive-unknown grace + a `--time`-derived
+  wall-clock backstop) guarantee the monitor loop terminates even if the cluster
+  goes unreachable — without ever reaping a job `sacct` still reports as queued
+  or running. File and repo-reading ops reuse the SSH path (the login node shares
+  the NFS workspace). (`core/execution.py`)
+- **Truthful experiment outcomes** — the monitor now asks the backend for a
+  finished job's real terminal state via `final_status()`, so a `FAILED` /
+  `TIMEOUT` / `CANCELLED` run is no longer silently recorded as `completed`. The
+  outcome flows into `state.json`, the experiment ledger, and the REFLECT
+  context, so the agent reasons over what actually happened. On Slurm the state
+  comes from `sacct`; pid-only backends (`local`/`ssh`) report it as
+  indeterminate and keep prior behavior. (`core/monitor.py`, `core/loop.py`)
+- Additive and opt-in; `local`/`ssh` behavior is unchanged. (+21 unit tests, no
+  cluster required.)
 
 **2026-06-01 — v2.0 (major update)**
 

@@ -93,22 +93,33 @@ class ExperimentMonitor:
                 f"last_log: {log_tail[-1] if log_tail else 'N/A'}"
             )
 
-        # Experiment finished
+        # Experiment finished — ask the backend for the real outcome. Slurm
+        # reports the sacct terminal state (so FAILED/TIMEOUT are not mislabelled
+        # as success); pid-only backends return unknown and we keep "completed".
         elapsed = time.time() - self._active_experiments.get(pid, {}).get("start_time", time.time())
         log_tail = self._safe_tail_file(log_file, lines=50)
 
+        final = self._safe_final_status(pid)
+        success = final.get("success")
+        status = "failed" if success is False else "completed"
+
         if pid in self._active_experiments:
-            self._active_experiments[pid]["status"] = "completed"
+            self._active_experiments[pid]["status"] = status
 
         result = {
             "pid": pid,
-            "status": "completed",
+            "status": status,
+            "success": success,
+            "terminal_state": final.get("state", "unknown"),
             "elapsed_hours": elapsed / 3600,
             "log_tail": "\n".join(log_tail),
             "metrics": self._extract_metrics(log_tail),
         }
 
-        logger.info(f"Experiment PID={pid} completed after {result['elapsed_hours']:.1f}h")
+        logger.info(
+            f"Experiment PID={pid} {status} after {result['elapsed_hours']:.1f}h "
+            f"(state={result['terminal_state']})"
+        )
 
         if notify:
             self._notify_completion(result)
@@ -132,6 +143,13 @@ class ExperimentMonitor:
             return self.backend.get_gpu_status()
         except Exception:
             return {"utilization": "N/A"}
+
+    def _safe_final_status(self, pid: int) -> dict:
+        try:
+            return self.backend.final_status(pid) or {}
+        except Exception:
+            # Backend without final_status support -> treat as indeterminate.
+            return {"state": "unknown", "success": None}
 
     def _safe_tail_file(self, filepath: str, lines: int = 50) -> list[str]:
         try:
@@ -167,9 +185,11 @@ class ExperimentMonitor:
         return metrics
 
     def _notify_completion(self, result: dict):
-        """Send notification when experiment completes."""
+        """Send notification when experiment finishes (success or failure)."""
+        outcome = result.get("status", "completed").upper()
         logger.info(
-            f"EXPERIMENT COMPLETE | PID={result['pid']} | "
+            f"EXPERIMENT {outcome} | PID={result['pid']} | "
             f"Time={result['elapsed_hours']:.1f}h | "
+            f"State={result.get('terminal_state', '?')} | "
             f"Metrics={result.get('metrics', {})}"
         )

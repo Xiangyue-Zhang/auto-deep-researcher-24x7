@@ -174,14 +174,18 @@ class ResearchLoop:
                     )
                     # Monitor experiment (zero LLM cost)
                     monitor_result = self._monitor_experiment(execute_result)
+                    experiment_status = monitor_result.get("status", "completed")
                     execute_result["training_logs"] = monitor_result.get("log_tail", "")
                     execute_result["final_metrics"] = monitor_result.get("metrics", {})
+                    execute_result["experiment_status"] = experiment_status
+                    execute_result["terminal_state"] = monitor_result.get("terminal_state", "")
                     self._update_state(
                         {
-                            "status": "completed",
+                            "status": experiment_status,
                             "pid": execute_result.get("pid"),
                             "log_file": execute_result.get("log_file", ""),
                             "updated_at": time.time(),
+                            "terminal_state": monitor_result.get("terminal_state", ""),
                             "last_training_logs": monitor_result.get("log_tail", ""),
                             "last_metrics": monitor_result.get("metrics", {}),
                             "elapsed_hours": monitor_result.get("elapsed_hours"),
@@ -467,9 +471,16 @@ class ResearchLoop:
         metrics = execute_result.get("final_metrics") or {}
         if not isinstance(metrics, dict):
             metrics = {}
-        status = "launched" if execute_result.get("experiment_launched") else (
-            think_result.get("action", "") or "no_experiment"
-        )
+        if execute_result.get("experiment_launched"):
+            # Prefer the monitor's real outcome (completed / failed) over a
+            # generic "launched" so the ledger reflects what actually happened.
+            status = execute_result.get("experiment_status") or "launched"
+        else:
+            status = think_result.get("action", "") or "no_experiment"
+        terminal_state = execute_result.get("terminal_state", "")
+        conclusion = reflect_result.get("milestone") or reflect_result.get("decision", "")
+        if status == "failed" and terminal_state:
+            conclusion = (f"[{terminal_state}] " + conclusion).strip()
         try:
             self.ledger.record(
                 cycle=self.cycle_count,
@@ -479,7 +490,7 @@ class ResearchLoop:
                 metrics=metrics,
                 pid=execute_result.get("pid"),
                 log_file=execute_result.get("log_file", ""),
-                conclusion=reflect_result.get("milestone") or reflect_result.get("decision", ""),
+                conclusion=conclusion,
             )
         except Exception as exc:
             logger.warning(f"ledger record failed: {exc}")

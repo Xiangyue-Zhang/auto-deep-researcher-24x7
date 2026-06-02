@@ -80,6 +80,20 @@ class V2ContextEnrichmentTests(unittest.TestCase):
         # milestone captured as a durable insight
         self.assertIn("best acc so far", self.loop.journal.insights_tail(2000))
 
+    def test_record_to_ledger_marks_failed_with_terminal_state(self):
+        # A failed experiment is recorded as "failed" (not "launched"), and the
+        # sacct terminal state is prefixed onto the conclusion.
+        think = {"action": "experiment", "hypothesis": "lr=10"}
+        execute = {"experiment_launched": True, "experiment_status": "failed",
+                   "terminal_state": "TIMEOUT", "pid": 9, "log_file": "logs/a.log",
+                   "final_metrics": {}}
+        reflect = {"decision": "retry with lower lr"}
+        self.loop._record_to_ledger(think, execute, reflect)
+
+        entry = self.loop.ledger.all()[0]
+        self.assertEqual(entry["status"], "failed")
+        self.assertTrue(entry["conclusion"].startswith("[TIMEOUT] "))
+
 
 class V2ThrottleTests(unittest.TestCase):
     def setUp(self):

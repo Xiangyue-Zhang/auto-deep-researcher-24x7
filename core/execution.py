@@ -590,6 +590,17 @@ class ExecutionBackend:
     def get_gpu_status(self) -> dict:
         raise NotImplementedError
 
+    def final_status(self, pid: int) -> dict:
+        """Outcome of a finished job: ``{"state": <str>, "success": <bool|None>}``.
+
+        Default is indeterminate (``success=None``): backends that only track an
+        OS pid cannot recover an exit code after the process is gone, so the
+        caller keeps treating the run as "completed". The Slurm backend overrides
+        this with the real ``sacct`` terminal state so FAILED / TIMEOUT / CANCELLED
+        are not silently reported as success.
+        """
+        return {"state": "unknown", "success": None}
+
 
 class LocalExecutionBackend(ExecutionBackend):
     """Current on-machine behavior."""
@@ -1127,6 +1138,20 @@ class SlurmExecutionBackend(SSHExecutionBackend):
     def last_terminal_state(self, pid: int) -> Optional[str]:
         """Raw sacct state of a finished job, if observed (e.g. ``TIMEOUT``)."""
         return self._last_terminal.get(int(pid))
+
+    def final_status(self, pid: int) -> dict:
+        """Real outcome from the observed ``sacct`` terminal state.
+
+        ``success`` is True only for ``COMPLETED``; ``FAILED`` / ``TIMEOUT`` /
+        ``CANCELLED`` / ``OUT_OF_MEMORY`` / … are reported as failures. If the
+        job was never observed reaching a terminal state (e.g. the cluster went
+        unreachable and it was reaped by the wall-clock backstop), the outcome
+        is indeterminate.
+        """
+        raw = self._last_terminal.get(int(pid))
+        if raw is None:
+            return {"state": "unknown", "success": None}
+        return {"state": raw, "success": raw in _SLURM_OK_STATES}
 
 
 def build_execution_backend(config: Optional[dict], controller_workspace: Path) -> ExecutionBackend:

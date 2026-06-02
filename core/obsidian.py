@@ -177,6 +177,13 @@ class ObsidianExporter:
             return "COMPLETED"
         if status == "error":
             return "ERROR"
+        if status == "failed":
+            terminal_state = state.get("terminal_state")
+            if terminal_state and terminal_state != "unknown":
+                return f"FAILED ({terminal_state})"
+            return "FAILED"
+        if status == "no_pid":
+            return "FAILED (no PID)"
         return "IDLE"
 
     def _render_dashboard(self, memory: MemoryManager, state: dict, cycle_count: int) -> str:

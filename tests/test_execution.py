@@ -31,10 +31,11 @@ class _Completed:
 
 
 class FakeBackend:
-    def __init__(self, alive=None, tail=None, gpu=None):
+    def __init__(self, alive=None, tail=None, gpu=None, final=None):
         self.alive = list(alive or [])
         self.tail = list(tail or [])
         self.gpu = gpu or {"utilization": "N/A"}
+        self.final = final or {"state": "unknown", "success": None}
         self.calls = []
 
     def validate(self):
@@ -75,6 +76,10 @@ class FakeBackend:
     def get_gpu_status(self):
         self.calls.append(("get_gpu_status",))
         return self.gpu
+
+    def final_status(self, pid):
+        self.calls.append(("final_status", pid))
+        return self.final
 
 
 class BuildExecutionBackendTests(unittest.TestCase):
@@ -275,6 +280,25 @@ class MonitorAndObsidianBackendTests(unittest.TestCase):
         self.assertIn(("tail_file", "logs/exp.log", 5), backend.calls)
         self.assertIn(("tail_file", "logs/exp.log", 50), backend.calls)
 
+    def test_monitor_reports_failed_from_backend_final_status(self):
+        # A backend that reports a failed terminal state -> status "failed",
+        # not a silent "completed".
+        backend = FakeBackend(
+            alive=[True, False],
+            tail=[["epoch 1"], ["epoch 1", "Traceback: boom"]],
+            final={"state": "FAILED", "success": False},
+        )
+        monitor = ExperimentMonitor(poll_interval=0, backend=backend)
+        monitor._active_experiments[7] = {"start_time": time.time(), "status": "running"}
+
+        with patch("core.monitor.time.sleep", return_value=None):
+            result = monitor.wait_for_completion(pid=7, log_file="logs/exp.log", notify=False)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["terminal_state"], "FAILED")
+        self.assertFalse(result["success"])
+        self.assertIn(("final_status", 7), backend.calls)
+
     def test_obsidian_dashboard_reads_remote_status_via_backend(self):
         backend = FakeBackend(alive=[True], tail=[["remote epoch 7"]])
         with tempfile.TemporaryDirectory() as tmp:
@@ -306,6 +330,25 @@ class MonitorAndObsidianBackendTests(unittest.TestCase):
         self.assertIn("remote epoch 7", dashboard)
         self.assertIn(("is_process_alive", 321), backend.calls)
         self.assertIn(("tail_file", "logs/exp.log", 8), backend.calls)
+
+    def test_obsidian_status_surfaces_failure(self):
+        # A failed run must NOT render as IDLE on the dashboard.
+        with tempfile.TemporaryDirectory() as tmp:
+            project_dir = Path(tmp)
+            (project_dir / "PROJECT_BRIEF.md").write_text("Train model")
+            (project_dir / "workspace").mkdir()
+            exporter = ObsidianExporter(
+                config={"obsidian": {"enabled": True}},
+                project_dir=project_dir,
+                backend=FakeBackend(),
+            )
+        self.assertEqual(
+            exporter._format_status({"status": "failed", "terminal_state": "TIMEOUT"}),
+            "FAILED (TIMEOUT)",
+        )
+        self.assertEqual(exporter._format_status({"status": "failed"}), "FAILED")
+        self.assertEqual(exporter._format_status({"status": "no_pid"}), "FAILED (no PID)")
+        self.assertEqual(exporter._format_status({"status": "completed"}), "COMPLETED")
 
 
 class SlurmExecutionBackendTests(unittest.TestCase):
@@ -473,6 +516,19 @@ class SlurmExecutionBackendTests(unittest.TestCase):
         self.assertEqual(args[0][:4], ["ssh", "-p", "2222", self.LOGIN])
         self.assertIn("sacct -j 12345", args[0][4])
         self.assertIn("State%30", args[0][4])              # explicit width, no truncation
+
+    def test_final_status_reflects_terminal_state(self):
+        backend = self._backend()
+        # A COMPLETED job -> success True
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(stdout="COMPLETED\n")):
+            self.assertFalse(backend.is_process_alive(1))   # records terminal state
+        self.assertEqual(backend.final_status(1), {"state": "COMPLETED", "success": True})
+        # A TIMEOUT job -> success False (not silently "completed")
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(stdout="TIMEOUT\n")):
+            self.assertFalse(backend.is_process_alive(2))
+        self.assertEqual(backend.final_status(2), {"state": "TIMEOUT", "success": False})
+        # Never observed reaching a terminal state -> indeterminate
+        self.assertEqual(backend.final_status(999), {"state": "unknown", "success": None})
 
     def test_get_gpu_status_parses_queue(self):
         backend = self._backend()
