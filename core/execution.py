@@ -16,6 +16,7 @@ import shutil
 import shlex
 import subprocess
 import textwrap
+import time
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
@@ -39,11 +40,63 @@ WALK_SKIP_DIRS = {
 GREP_MAX_FILE_BYTES = 2_000_000
 
 
+# --- Slurm liveness taxonomy (used by SlurmExecutionBackend) ---
+# We map a job's `sacct` State to three buckets. Reference: `man sacct`
+# JOB STATE CODES. PENDING/RUNNING/etc. occupy a slot ("running"); COMPLETED
+# is "completed"; the rest are "failed". PREEMPTED is intentionally ABSENT:
+# under a requeue policy a preempted job returns to PENDING, so we let it fall
+# through to "unknown" (bounded grace) rather than reaping it early.
+_SLURM_RUNNING_STATES = {
+    "PENDING", "RUNNING", "REQUEUED", "RESIZING", "SUSPENDED",
+    "CONFIGURING", "COMPLETING",
+}
+_SLURM_OK_STATES = {"COMPLETED"}
+_SLURM_FAIL_STATES = {
+    "FAILED", "TIMEOUT", "CANCELLED", "NODE_FAIL", "OUT_OF_MEMORY",
+    "BOOT_FAIL", "DEADLINE", "REVOKED", "SPECIAL_EXIT",
+}
+
+
+def _parse_slurm_time_seconds(spec: str) -> int:
+    """Parse a Slurm ``--time`` spec to seconds.
+
+    Accepts the documented forms: ``minutes``, ``minutes:seconds``,
+    ``hours:minutes:seconds``, ``days-hours``, ``days-hours:minutes``,
+    ``days-hours:minutes:seconds``. Returns a large sentinel when unparseable
+    so the wall-clock liveness cap never fires spuriously (the consecutive
+    -unknown grace still bounds the loop).
+    """
+    s = str(spec or "").strip()
+    if not s:
+        return 10 ** 9
+    try:
+        days = 0
+        if "-" in s:
+            d, s = s.split("-", 1)
+            days = int(d)
+        parts = s.split(":") if s else []
+        if days:
+            # days-hours[:minutes[:seconds]]
+            hours = int(parts[0]) if len(parts) >= 1 else 0
+            minutes = int(parts[1]) if len(parts) >= 2 else 0
+            seconds = int(parts[2]) if len(parts) >= 3 else 0
+        elif len(parts) == 1:
+            hours, minutes, seconds = 0, int(parts[0]), 0          # bare minutes
+        elif len(parts) == 2:
+            hours, minutes, seconds = 0, int(parts[0]), int(parts[1])  # minutes:seconds
+        else:
+            hours, minutes, seconds = int(parts[0]), int(parts[1]), int(parts[2])
+        return days * 86400 + hours * 3600 + minutes * 60 + seconds
+    except (ValueError, TypeError, IndexError):
+        return 10 ** 9
+
+
 REMOTE_HELPER = textwrap.dedent(
     """
     import json
     import os
     import pathlib
+    import shlex
     import subprocess
     import sys
 
@@ -278,6 +331,85 @@ REMOTE_HELPER = textwrap.dedent(
                 result = {"lines": lines[-int(payload.get('lines', 50)) :]}
         elif action == "get_gpu_status":
             result = gpu_status()
+        elif action == "submit_slurm":
+            # Build the sbatch script HERE, in Python, with shell=False — no
+            # remote shell string is ever assembled from caller-supplied argv,
+            # so there is no injection surface. Then `sbatch --parsable` and
+            # EXIT: nothing persistent is left on the login node (the v7
+            # submit-and-exit invariant). Slurm enforces --time.
+            argv = payload["argv"]
+            if not isinstance(argv, list) or not argv:
+                raise ValueError("submit_slurm requires a non-empty argv list")
+            log_file = payload["log_file"]
+            log_path = resolve_path(root, log_file)        # reuses traversal guard
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            root.mkdir(parents=True, exist_ok=True)
+            # Slurm assigns GPUs via --gres; an inherited CUDA_VISIBLE_DEVICES /
+            # GPU would pin every job to the wrong physical device. Strip them.
+            env = {
+                k: v for k, v in (payload.get("env") or {}).items()
+                if k not in ("CUDA_VISIBLE_DEVICES", "GPU")
+            }
+            job_name = str(payload.get("job_name") or "ar_job")
+            # #SBATCH directive lines are tokenized by Slurm on whitespace
+            # (honoring double quotes), NOT run through a shell — so a path with
+            # spaces must be double-quoted. Strip any embedded double-quote to
+            # keep quoting unambiguous (paths realistically never contain one).
+            def _q(value):
+                return chr(34) + str(value).replace(chr(34), "") + chr(34)
+            lines = ["#!/bin/bash"]
+            lines.append("#SBATCH --job-name=" + _q(job_name))
+            lines.append("#SBATCH --partition=" + str(payload["partition"]))
+            lines.append("#SBATCH --chdir=" + _q(str(root)))
+            # --output is relative; Slurm resolves it against --chdir, matching
+            # how tail_file(log_file) resolves it under the workspace root.
+            lines.append("#SBATCH --output=" + _q(log_file))
+            lines.append("#SBATCH --time=" + str(payload["time"]))
+            raw_gres = payload.get("raw_gres") or ""
+            gres = payload.get("gres")
+            if raw_gres:
+                lines.append("#SBATCH --gres=" + str(raw_gres))
+            elif isinstance(gres, int) and gres >= 1:
+                lines.append("#SBATCH --gres=gpu:" + str(gres))
+            if payload.get("qos"):
+                lines.append("#SBATCH --qos=" + str(payload["qos"]))
+            if payload.get("account"):
+                lines.append("#SBATCH --account=" + str(payload["account"]))
+            for extra in (payload.get("extra_sbatch") or []):
+                lines.append("#SBATCH " + str(extra))
+            setup = payload.get("setup") or ""
+            if setup:
+                lines.append(str(setup))
+            for k, v in env.items():
+                lines.append("export " + str(k) + "=" + shlex.quote(str(v)))
+            lines.append(" ".join(shlex.quote(str(a)) for a in argv))
+            script = chr(10).join(lines) + chr(10)
+            script_path = root / (".sbatch_" + job_name)
+            script_path.write_text(script)
+            try:
+                proc = subprocess.run(
+                    ["sbatch", "--parsable", str(script_path)],
+                    capture_output=True, text=True, timeout=60,
+                    cwd=str(root), check=False,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError("sbatch not found on remote host: " + str(exc))
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    "sbatch failed: " + (proc.stderr or proc.stdout).strip()[:400]
+                )
+            token = ""
+            if proc.stdout.strip():
+                token = proc.stdout.strip().splitlines()[0].split(";")[0].strip()
+            if not token.isdigit():
+                raise RuntimeError(
+                    "sbatch did not return a job id: " + proc.stdout.strip()[:200]
+                )
+            result = {
+                "slurm_job_id": int(token),
+                "log_file": log_file,
+                "script_path": str(script_path),
+            }
         else:
             raise ValueError(f"Unknown action: {action}")
 
@@ -699,6 +831,24 @@ class SSHExecutionBackend(ExecutionBackend):
     def get_gpu_status(self) -> dict:
         return self._invoke("get_gpu_status", transport_timeout=20)
 
+    def _ssh_shell(self, remote_cmd: str, timeout: int = 15) -> subprocess.CompletedProcess:
+        """Run ONE transient remote shell command, reusing this backend's host
+        and ssh_args (single source of truth — no split-brain transport).
+
+        Used by the Slurm subclass for ``sacct`` / ``squeue`` / ``scancel``, the
+        only places an arbitrary remote shell string is needed. Each call runs
+        one command and returns immediately; nothing persistent is started on
+        the remote. The only values interpolated into these strings are
+        validated integers (job ids) or operator-controlled config.
+        """
+        return subprocess.run(
+            ["ssh", *self.ssh_args, self.ssh_host, remote_cmd],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+
     def _invoke(self, action: str, transport_timeout: int = 60, **kwargs) -> dict:
         payload = {
             "action": action,
@@ -746,6 +896,239 @@ class SSHExecutionBackend(ExecutionBackend):
         return payload.get("result", {})
 
 
+class SlurmExecutionBackend(SSHExecutionBackend):
+    """Run experiments on a Slurm-managed cluster via a login node.
+
+    The login node shares an NFS workspace with the compute nodes, so every
+    file / repo-reading / ``run_command`` operation is inherited unchanged from
+    :class:`SSHExecutionBackend` (they run on the login node over the same
+    JSON-over-stdin helper transport). Only three things differ on a scheduler:
+
+      - **launch** — instead of starting a process, submit an ``sbatch`` job
+        with ``--parsable`` over ONE transient ssh call that exits immediately.
+        The integer Slurm job id is returned in the ``pid`` field so the
+        existing PID-keyed monitor / state.json plumbing works unchanged. No
+        ``srun --wait``, no ``tmux``, no polling loop is ever left on the login
+        node (the 2026-05-29 Tokyo-U MIL incident: a persistent login-node
+        process is impermissible).
+      - **liveness** — ``sacct`` is the sole authority while the cluster is
+        reachable; the controller polls it transiently. Slurm enforces
+        ``--time`` (reporting ``TIMEOUT``), so a running job always reaches a
+        terminal state on its own.
+      - **gpu status** — the login node has no usable ``nvidia-smi``; report
+        the partition's queue occupancy from ``squeue`` instead.
+
+    Two safeguards live INSIDE :meth:`is_process_alive` so the monitor's
+    unbounded ``while is_process_alive(pid): sleep`` loop provably terminates
+    even if the cluster becomes unreachable. They apply ONLY when sacct cannot
+    confirm the job's state — a job sacct still reports as queued/running is
+    never reaped (a long PENDING queue wait is not bounded by ``--time``):
+
+      1. *Bounded unknown grace* — after ``slurm_unknown_grace_polls``
+         consecutive indeterminate probes (ssh down / sacct purged), the job is
+         declared dead.
+      2. *Wall-clock backstop* — if the job is still unconfirmable once
+         ``--time`` + ``slurm_time_buffer`` has elapsed since the first poll,
+         it is declared dead (Slurm would have produced a terminal state by
+         then for any job that actually ran).
+    """
+
+    def __init__(
+        self,
+        ssh_host: str,
+        remote_workspace: str,
+        remote_python: str = "python3",
+        ssh_args: Optional[list[str]] = None,
+        slurm_partition: str = "",
+        slurm_time: str = "",
+        slurm_gpus_per_job: Optional[int] = None,
+        slurm_gres: str = "",
+        slurm_qos: str = "",
+        slurm_account: str = "",
+        slurm_setup: str = "",
+        slurm_extra_sbatch: Optional[list[str]] = None,
+        slurm_unknown_grace_polls: int = 4,
+        slurm_time_buffer: int = 1800,
+    ):
+        super().__init__(ssh_host, remote_workspace, remote_python, ssh_args)
+        self.slurm_partition = slurm_partition
+        self.slurm_time = slurm_time
+        self.slurm_gpus_per_job = slurm_gpus_per_job
+        self.slurm_gres = slurm_gres
+        self.slurm_qos = slurm_qos
+        self.slurm_account = slurm_account
+        self.slurm_setup = slurm_setup
+        self.slurm_extra_sbatch = list(slurm_extra_sbatch or [])
+        self.slurm_unknown_grace_polls = int(slurm_unknown_grace_polls)
+        self.slurm_time_buffer = int(slurm_time_buffer)
+        self._time_cap_seconds = _parse_slurm_time_seconds(slurm_time)
+        # Per-job liveness state, keyed by Slurm job id.
+        self._first_seen: dict[int, float] = {}
+        self._unknown_count: dict[int, int] = {}
+        self._last_terminal: dict[int, str] = {}
+
+    def validate(self):
+        if not self.ssh_host:
+            raise ValueError("execution.ssh_host is required when execution.mode=slurm")
+        if not self.remote_workspace:
+            raise ValueError("execution.remote_workspace is required when execution.mode=slurm")
+        if not self.slurm_partition:
+            raise ValueError("execution.slurm_partition is required when execution.mode=slurm")
+        if not self.slurm_time:
+            raise ValueError("execution.slurm_time is required when execution.mode=slurm")
+        if shutil.which("ssh") is None:
+            raise RuntimeError("ssh binary not found on PATH")
+        # Workspace reachable + remote python OK (inherited helper transport).
+        self._invoke("validate", transport_timeout=30)
+        # Require ALL three tools: `command -v a b c` succeeds if ANY one
+        # resolves, so chain a check per tool.
+        probe = self._ssh_shell(
+            "command -v sbatch >/dev/null 2>&1 "
+            "&& command -v sacct >/dev/null 2>&1 "
+            "&& command -v squeue >/dev/null 2>&1 && echo OK",
+            timeout=15,
+        )
+        if probe.returncode != 0 or "OK" not in (probe.stdout or ""):
+            raise RuntimeError(
+                "Slurm tools (sbatch/sacct/squeue) not found on the login node; "
+                "is execution.ssh_host a Slurm submit host?"
+            )
+
+    def launch_command(self, argv: list[str], log_file: str, env: Optional[dict] = None) -> dict:
+        normalized_log = normalize_relative_path(log_file)
+        job_name = "ar_" + (Path(normalized_log).stem or "job")
+        payload = self._invoke(
+            "submit_slurm",
+            argv=list(argv),
+            log_file=normalized_log,
+            env=env or {},                       # remote helper strips CUDA_VISIBLE_DEVICES/GPU
+            partition=self.slurm_partition,
+            time=self.slurm_time,
+            gres=self.slurm_gpus_per_job,
+            raw_gres=self.slurm_gres,
+            qos=self.slurm_qos,
+            account=self.slurm_account,
+            job_name=job_name,
+            setup=self.slurm_setup,
+            extra_sbatch=list(self.slurm_extra_sbatch),
+            transport_timeout=90,
+        )
+        job_id = int(payload["slurm_job_id"])
+        # `pid` carries the Slurm job id so the existing monitor / state.json /
+        # obsidian plumbing (which keys on `pid`) works without changes.
+        return {
+            "pid": job_id,
+            "slurm_job_id": job_id,
+            "log_file": payload.get("log_file", normalized_log),
+            "status": "submitted",
+        }
+
+    def _sacct_state(self, job_id: int) -> tuple[str, str]:
+        """Return (bucket, raw_state) for a Slurm job; bucket in
+        {running, completed, failed, unknown}. One transient sacct query, with
+        a squeue fallback for a job too new / already purged from accounting."""
+        cmd = f"sacct -j {int(job_id)} --format=State%30 -X -n -P 2>/dev/null | head -1"
+        try:
+            r = self._ssh_shell(cmd, timeout=15)
+        except (subprocess.TimeoutExpired, OSError):
+            return "unknown", "ssh_failed"
+        if r.returncode != 0:
+            return "unknown", f"sacct_rc={r.returncode}"
+        out = (r.stdout or "").strip()
+        # split()[0] drops a trailing " by <uid>" (e.g. "CANCELLED by 1001");
+        # .replace("+","") strips the "CANCELLED+" suffix Slurm appends.
+        raw = out.split()[0].replace("+", "").upper() if out else ""
+        if not raw:
+            sq = f"squeue -j {int(job_id)} -h -o '%T' 2>/dev/null | head -1"
+            try:
+                r2 = self._ssh_shell(sq, timeout=15)
+                raw = (r2.stdout or "").strip().upper()
+            except (subprocess.TimeoutExpired, OSError):
+                raw = ""
+            if not raw:
+                return "unknown", "sacct_empty"
+        if raw in _SLURM_RUNNING_STATES:
+            return "running", raw
+        if raw in _SLURM_OK_STATES:
+            return "completed", raw
+        if raw in _SLURM_FAIL_STATES:
+            return "failed", raw
+        return "unknown", raw
+
+    def is_process_alive(self, pid: int) -> bool:
+        """Alive iff the Slurm job is in a running-bucket state. Indeterminate
+        probes keep the job alive only for a bounded number of consecutive
+        polls; a job is also force-reaped past ``--time`` + buffer. Both bounds
+        guarantee the monitor's polling loop always terminates."""
+        job_id = int(pid)
+        now = time.time()
+        first = self._first_seen.setdefault(job_id, now)
+        bucket, raw = self._sacct_state(job_id)
+        if bucket == "running":
+            # PENDING/RUNNING/etc. are authoritative. A long queue wait is NOT
+            # bounded by --time (which only counts while RUNNING), so never reap
+            # a job sacct still confirms is queued or running.
+            self._unknown_count[job_id] = 0
+            return True
+        if bucket in ("completed", "failed"):
+            self._last_terminal[job_id] = raw
+            return False
+        # Indeterminate (ssh/sacct unreachable, or the job purged from both
+        # sacct and squeue). Two bounds keep the monitor's polling loop finite
+        # WITHOUT ever reaping a job sacct confirms is live:
+        #   - a wall-clock backstop: Slurm enforces --time, so once --time +
+        #     buffer has elapsed and we STILL cannot confirm the job, it is
+        #     almost certainly gone;
+        #   - a consecutive-unknown grace for shorter outages.
+        if now - first > self._time_cap_seconds + self.slurm_time_buffer:
+            return False
+        self._unknown_count[job_id] = self._unknown_count.get(job_id, 0) + 1
+        return self._unknown_count[job_id] <= self.slurm_unknown_grace_polls
+
+    def get_gpu_status(self) -> dict:
+        """Report the partition's queue occupancy (login node has no usable
+        nvidia-smi). Advisory only — the monitor just logs ``utilization``."""
+        cmd = (
+            "squeue --me -p " + shlex.quote(self.slurm_partition)
+            + " --states=PD,R -h -o '%T' 2>/dev/null | sort | uniq -c"
+        )
+        pending = running = 0
+        try:
+            r = self._ssh_shell(cmd, timeout=20)
+        except (subprocess.TimeoutExpired, OSError):
+            return {
+                "utilization": "slurm", "partition": self.slurm_partition,
+                "pending": 0, "running": 0, "note": "squeue unavailable",
+            }
+        if r.returncode == 0:
+            for line in (r.stdout or "").splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].isdigit():
+                    count, state = int(parts[0]), parts[1].upper()
+                    if state.startswith("PEND") or state == "PD":
+                        pending = count
+                    elif state.startswith("R"):
+                        running = count
+        return {
+            "utilization": "slurm", "partition": self.slurm_partition,
+            "pending": pending, "running": running,
+        }
+
+    def cancel(self, pid: int) -> bool:
+        """Best-effort ``scancel`` for a Slurm job. Not wired into a caller yet
+        (orphaned jobs are otherwise reclaimed by ``--time``); available for a
+        future kill-on-shutdown path."""
+        try:
+            r = self._ssh_shell("scancel " + str(int(pid)), timeout=8)
+            return r.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+    def last_terminal_state(self, pid: int) -> Optional[str]:
+        """Raw sacct state of a finished job, if observed (e.g. ``TIMEOUT``)."""
+        return self._last_terminal.get(int(pid))
+
+
 def build_execution_backend(config: Optional[dict], controller_workspace: Path) -> ExecutionBackend:
     """Construct the execution backend from project config."""
     config = config or {}
@@ -759,6 +1142,23 @@ def build_execution_backend(config: Optional[dict], controller_workspace: Path) 
             remote_python=execution.get("remote_python", "python3"),
             ssh_args=execution.get("ssh_args", []) or [],
         )
+    if mode == "slurm":
+        return SlurmExecutionBackend(
+            ssh_host=execution.get("ssh_host", ""),
+            remote_workspace=execution.get("remote_workspace", ""),
+            remote_python=execution.get("remote_python", "python3"),
+            ssh_args=execution.get("ssh_args", []) or [],
+            slurm_partition=execution.get("slurm_partition", ""),
+            slurm_time=execution.get("slurm_time", ""),
+            slurm_gpus_per_job=execution.get("slurm_gpus_per_job"),
+            slurm_gres=execution.get("slurm_gres", ""),
+            slurm_qos=execution.get("slurm_qos", ""),
+            slurm_account=execution.get("slurm_account", ""),
+            slurm_setup=execution.get("slurm_setup", ""),
+            slurm_extra_sbatch=execution.get("slurm_extra_sbatch", []) or [],
+            slurm_unknown_grace_polls=int(execution.get("slurm_unknown_grace_polls", 4)),
+            slurm_time_buffer=int(execution.get("slurm_time_buffer", 1800)),
+        )
     if mode != "local":
-        raise ValueError(f"Unknown execution.mode '{mode}'. Supported: local, ssh")
+        raise ValueError(f"Unknown execution.mode '{mode}'. Supported: local, ssh, slurm")
     return LocalExecutionBackend(controller_workspace)

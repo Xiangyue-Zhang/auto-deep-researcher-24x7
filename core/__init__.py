@@ -1,6 +1,12 @@
 """AutoResearcher Core - Autonomous ML Experiment Agent Framework."""
 
-from .execution import ExecutionBackend, LocalExecutionBackend, SSHExecutionBackend, build_execution_backend
+from .execution import (
+    ExecutionBackend,
+    LocalExecutionBackend,
+    SSHExecutionBackend,
+    SlurmExecutionBackend,
+    build_execution_backend,
+)
 from .loop import ResearchLoop
 from .memory import MemoryManager
 from .monitor import ExperimentMonitor
@@ -16,6 +22,7 @@ __all__ = [
     "MemoryManager",
     "ResearchLoop",
     "SSHExecutionBackend",
+    "SlurmExecutionBackend",
     "ToolRegistry",
     "build_execution_backend",
 ]

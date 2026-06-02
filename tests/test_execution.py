@@ -11,7 +11,12 @@ from core.execution import (
     LocalExecutionBackend,
     REMOTE_HELPER,
     SSHExecutionBackend,
+    SlurmExecutionBackend,
     build_execution_backend,
+    _parse_slurm_time_seconds,
+    _SLURM_RUNNING_STATES,
+    _SLURM_OK_STATES,
+    _SLURM_FAIL_STATES,
 )
 from core.monitor import ExperimentMonitor
 from core.obsidian import ObsidianExporter
@@ -301,6 +306,329 @@ class MonitorAndObsidianBackendTests(unittest.TestCase):
         self.assertIn("remote epoch 7", dashboard)
         self.assertIn(("is_process_alive", 321), backend.calls)
         self.assertIn(("tail_file", "logs/exp.log", 8), backend.calls)
+
+
+class SlurmExecutionBackendTests(unittest.TestCase):
+    LOGIN = "user@login-node"
+
+    def _backend(self, **kw):
+        defaults = dict(
+            ssh_host=self.LOGIN,
+            remote_workspace="/nfs/ws",
+            slurm_partition="gpu",
+            slurm_time="24:00:00",
+            slurm_gpus_per_job=1,
+        )
+        defaults.update(kw)
+        return SlurmExecutionBackend(**defaults)
+
+    # --- factory + validation ---
+
+    def test_factory_builds_slurm_backend(self):
+        backend = build_execution_backend(
+            config={
+                "execution": {
+                    "mode": "slurm",
+                    "ssh_host": self.LOGIN,
+                    "remote_workspace": "/nfs/ws",
+                    "slurm_partition": "gpu-h200",
+                    "slurm_time": "12:00:00",
+                    "slurm_gpus_per_job": 2,
+                    "ssh_args": ["-p", "2222"],
+                }
+            },
+            controller_workspace=Path("/tmp/workspace"),
+        )
+        self.assertIsInstance(backend, SlurmExecutionBackend)
+        self.assertEqual(backend.slurm_partition, "gpu-h200")
+        self.assertEqual(backend.slurm_time, "12:00:00")
+        self.assertEqual(backend.slurm_gpus_per_job, 2)
+        self.assertEqual(backend.ssh_args, ["-p", "2222"])
+
+    def test_unknown_mode_message_lists_slurm(self):
+        with self.assertRaisesRegex(ValueError, "local, ssh, slurm"):
+            build_execution_backend(
+                config={"execution": {"mode": "bogus"}},
+                controller_workspace=Path("/tmp/workspace"),
+            )
+
+    def test_validate_requires_partition_and_time(self):
+        # partition missing -> raises before any ssh round-trip
+        with self.assertRaisesRegex(ValueError, "slurm_partition is required"):
+            self._backend(slurm_partition="").validate()
+        with self.assertRaisesRegex(ValueError, "slurm_time is required"):
+            self._backend(slurm_time="").validate()
+
+    # --- launch (submit-and-exit) ---
+
+    @patch("core.execution.subprocess.run")
+    def test_launch_submits_and_parses_job_id(self, run_mock):
+        run_mock.return_value = _Completed(
+            stdout=json.dumps(
+                {"ok": True, "result": {"slurm_job_id": 12345, "log_file": "logs/exp.log"}}
+            )
+        )
+        backend = self._backend(slurm_gpus_per_job=2)
+
+        result = backend.launch_command(
+            ["python", "train.py"],
+            "logs/exp.log",
+            env={"CUDA_VISIBLE_DEVICES": "3", "FOO": "bar"},
+        )
+
+        self.assertEqual(result["pid"], 12345)
+        self.assertEqual(result["slurm_job_id"], 12345)
+        self.assertEqual(result["status"], "submitted")
+
+        args, kwargs = run_mock.call_args
+        self.assertEqual(args[0][0], "ssh")            # transport is ssh, no local shell
+        self.assertNotIn("shell", kwargs)
+        payload = json.loads(kwargs["input"])
+        self.assertEqual(payload["action"], "submit_slurm")
+        self.assertEqual(payload["argv"], ["python", "train.py"])
+        self.assertEqual(payload["partition"], "gpu")
+        self.assertEqual(payload["gres"], 2)
+        self.assertEqual(payload["env"]["FOO"], "bar")  # remote helper does the CUDA strip
+
+    @patch("core.execution.subprocess.run")
+    def test_launch_failure_raises(self, run_mock):
+        run_mock.return_value = _Completed(
+            stdout=json.dumps(
+                {"ok": False, "error_type": "RuntimeError",
+                 "error": "sbatch: error: invalid partition specified"}
+            )
+        )
+        with self.assertRaises(RuntimeError):
+            self._backend().launch_command(["python", "t.py"], "logs/exp.log")
+
+    # --- liveness: sacct state map + anti-hang bounds ---
+
+    def _alive_with_state(self, sacct_stdout):
+        backend = self._backend()
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(stdout=sacct_stdout)):
+            return backend.is_process_alive(12345)
+
+    def test_is_alive_state_map(self):
+        # Drive every enumerated state from the maps themselves so dropping a
+        # state from its bucket (e.g. removing COMPLETING from running) regresses.
+        for state in _SLURM_RUNNING_STATES:
+            self.assertTrue(self._alive_with_state(state + "\n"), state)
+        for state in _SLURM_OK_STATES:
+            self.assertFalse(self._alive_with_state(state + "\n"), state)
+        for state in _SLURM_FAIL_STATES:
+            self.assertFalse(self._alive_with_state(state + "\n"), state)
+        # Normalization edges + a non-fail indeterminate state.
+        self.assertFalse(self._alive_with_state("CANCELLED+\n"))          # '+' suffix stripped
+        self.assertFalse(self._alive_with_state("CANCELLED by 1001\n"))   # ' by <uid>' stripped
+        # PREEMPTED is not a fail state -> indeterminate -> kept alive (1st grace poll)
+        self.assertTrue(self._alive_with_state("PREEMPTED\n"))
+
+    def test_is_alive_sacct_nonzero_rc_is_unknown_grace(self):
+        # sacct exits non-zero (transient accounting error) -> indeterminate,
+        # NOT dead: keep the job alive for the bounded grace window.
+        backend = self._backend(slurm_unknown_grace_polls=2)
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(stdout="", returncode=1)):
+            self.assertEqual([backend.is_process_alive(555) for _ in range(3)], [True, True, False])
+
+    def test_is_alive_ssh_failure_is_unknown_grace(self):
+        # ssh timeout -> indeterminate, NOT dead.
+        backend = self._backend(slurm_unknown_grace_polls=2)
+        with patch.object(backend, "_ssh_shell",
+                          side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=15)):
+            self.assertEqual([backend.is_process_alive(556) for _ in range(3)], [True, True, False])
+
+    def test_is_alive_pending_never_reaped_by_wallclock(self):
+        # A job sacct still reports PENDING must NOT be reaped even long past
+        # --time + buffer (queue wait is not bounded by --time).
+        backend = self._backend(slurm_time="00:01:00", slurm_time_buffer=0)  # 60s cap
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(stdout="PENDING\n")):
+            with patch("core.execution.time.time", side_effect=[1000.0, 1000.0 + 100000]):
+                self.assertTrue(backend.is_process_alive(99))   # first poll
+                self.assertTrue(backend.is_process_alive(99))   # 100000s later, still PENDING
+
+    def test_is_alive_unknown_is_bounded(self):
+        """Regression guard: a vanished/unreachable job must NOT hang forever."""
+        backend = self._backend(slurm_unknown_grace_polls=3)
+        # sacct empty AND squeue empty on every probe -> 'unknown' every time.
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(stdout="")):
+            results = [backend.is_process_alive(777) for _ in range(4)]
+        self.assertEqual(results, [True, True, True, False])
+
+    @patch("core.execution.time.time")
+    def test_is_alive_wallclock_cap(self, time_mock):
+        backend = self._backend(slurm_time="00:01:00", slurm_time_buffer=0)  # 60s cap
+        time_mock.side_effect = [1000.0, 1000.0 + 120]  # first seeds, second is past cap
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(stdout="")):
+            self.assertTrue(backend.is_process_alive(42))   # within cap, unknown -> grace
+            self.assertFalse(backend.is_process_alive(42))  # past --time+buffer -> reaped
+
+    @patch("core.execution.subprocess.run")
+    def test_liveness_reuses_host_and_args(self, run_mock):
+        run_mock.return_value = _Completed(stdout="RUNNING\n")
+        backend = self._backend(ssh_args=["-p", "2222"])
+
+        self.assertTrue(backend.is_process_alive(12345))
+
+        args, _ = run_mock.call_args
+        self.assertEqual(args[0][:4], ["ssh", "-p", "2222", self.LOGIN])
+        self.assertIn("sacct -j 12345", args[0][4])
+        self.assertIn("State%30", args[0][4])              # explicit width, no truncation
+
+    def test_get_gpu_status_parses_queue(self):
+        backend = self._backend()
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(stdout="   2 PENDING\n   1 RUNNING\n")):
+            status = backend.get_gpu_status()
+        self.assertEqual(status["utilization"], "slurm")
+        self.assertEqual(status["pending"], 2)
+        self.assertEqual(status["running"], 1)
+
+    def test_cancel_calls_scancel(self):
+        backend = self._backend()
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(returncode=0)) as shell:
+            self.assertTrue(backend.cancel(12345))
+        shell.assert_called_once()
+        self.assertIn("scancel 12345", shell.call_args[0][0])
+        # non-zero scancel -> False (not "return True unconditionally")
+        with patch.object(backend, "_ssh_shell", return_value=_Completed(returncode=1)):
+            self.assertFalse(backend.cancel(12345))
+        # transport failure is swallowed -> False, never propagated
+        with patch.object(backend, "_ssh_shell",
+                          side_effect=subprocess.TimeoutExpired(cmd="scancel", timeout=8)):
+            self.assertFalse(backend.cancel(12345))
+
+    def test_parse_slurm_time_seconds(self):
+        self.assertEqual(_parse_slurm_time_seconds("60"), 3600)            # bare minutes
+        self.assertEqual(_parse_slurm_time_seconds("01:30"), 90)           # minutes:seconds
+        self.assertEqual(_parse_slurm_time_seconds("12:00:00"), 43200)     # h:m:s
+        self.assertEqual(_parse_slurm_time_seconds("2-00:00:00"), 172800)  # days-h:m:s
+        self.assertEqual(_parse_slurm_time_seconds("1-12"), 129600)        # days-hours
+        self.assertEqual(_parse_slurm_time_seconds("garbage"), 10 ** 9)    # sentinel
+
+
+class SlurmRemoteHelperTests(unittest.TestCase):
+    """Run the embedded REMOTE_HELPER as a subprocess (sbatch is absent here, so
+    submission fails AFTER the script is written — we assert on the script)."""
+
+    def _run_helper(self, payload):
+        proc = subprocess.run(
+            ["python3", "-c", REMOTE_HELPER],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    def test_submit_slurm_builds_safe_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ws"
+            root.mkdir()
+            self._run_helper(
+                {
+                    "action": "submit_slurm",
+                    "remote_workspace": str(root),
+                    "argv": ["python", "t.py", "--x", "a b"],
+                    "log_file": "logs/exp.log",
+                    "env": {"CUDA_VISIBLE_DEVICES": "3", "FOO": "b a r"},
+                    "partition": "gpu",
+                    "time": "01:00:00",
+                    "gres": 2,
+                    "raw_gres": "",
+                    "qos": "",
+                    "account": "",
+                    "job_name": "ar_exp",
+                    "setup": "module load cuda/12.4",
+                    "extra_sbatch": ["--nodes=1"],
+                }
+            )
+            # The output-log parent must be pre-created (Slurm won't make it).
+            self.assertTrue((root / "logs").is_dir())
+            script = (root / ".sbatch_ar_exp").read_text()
+
+        self.assertIn("#SBATCH --partition=gpu", script)
+        self.assertIn("#SBATCH --time=01:00:00", script)
+        self.assertIn('#SBATCH --output="logs/exp.log"', script)   # quoted (whitespace-safe)
+        self.assertIn("#SBATCH --gres=gpu:2", script)
+        self.assertIn("#SBATCH --nodes=1", script)
+        self.assertIn("module load cuda/12.4", script)
+        # env quoted safely; injection-prone arg quoted; GPU mask stripped.
+        self.assertIn("export FOO='b a r'", script)
+        self.assertIn("'a b'", script)
+        self.assertNotIn("CUDA_VISIBLE_DEVICES", script)
+        # No persistent login-node construct (the 2026-05-29 MIL invariant).
+        for forbidden in ("tmux", "srun", "--wait", "squeue", "while "):
+            self.assertNotIn(forbidden, script)
+
+    def _run_helper_with_path(self, payload, extra_path):
+        env = {**os.environ, "PATH": extra_path + os.pathsep + os.environ["PATH"]}
+        proc = subprocess.run(
+            ["python3", "-c", REMOTE_HELPER],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout)
+
+    @staticmethod
+    def _fake_sbatch(bindir, body_line):
+        fake = bindir / "sbatch"
+        fake.write_text("#!/bin/bash\n" + body_line + "\n")
+        fake.chmod(0o755)
+
+    def _submit_payload(self, root, job_name):
+        return {
+            "action": "submit_slurm", "remote_workspace": str(root),
+            "argv": ["python", "t.py"], "log_file": "out.log", "env": {},
+            "partition": "gpu", "time": "01:00:00", "gres": 1,
+            "raw_gres": "", "job_name": job_name,
+        }
+
+    def test_submit_slurm_parses_federated_job_id(self):
+        # sbatch --parsable can emit the federated "<id>;<cluster>" form.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ws"; root.mkdir()
+            binp = Path(tmp) / "bin"; binp.mkdir()
+            self._fake_sbatch(binp, "printf '12345;cluster0\\n'")
+            body = self._run_helper_with_path(self._submit_payload(root, "ar_fed"), str(binp))
+        self.assertTrue(body["ok"], body)
+        self.assertEqual(body["result"]["slurm_job_id"], 12345)
+
+    def test_submit_slurm_rejects_non_numeric_output(self):
+        # A non --parsable line (e.g. "Submitted batch job 99") must be rejected,
+        # not mis-parsed into a bogus job id.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ws"; root.mkdir()
+            binp = Path(tmp) / "bin"; binp.mkdir()
+            self._fake_sbatch(binp, "printf 'Submitted batch job 99\\n'")
+            body = self._run_helper_with_path(self._submit_payload(root, "ar_bad"), str(binp))
+        self.assertFalse(body["ok"])
+        self.assertIn("did not return a job id", body["error"])
+
+    def test_submit_slurm_raw_gres_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ws"
+            root.mkdir()
+            self._run_helper(
+                {
+                    "action": "submit_slurm",
+                    "remote_workspace": str(root),
+                    "argv": ["python", "t.py"],
+                    "log_file": "out.log",
+                    "env": {},
+                    "partition": "gpu",
+                    "time": "01:00:00",
+                    "gres": 1,
+                    "raw_gres": "gpu:a100:4",
+                    "job_name": "ar_raw",
+                }
+            )
+            script = (root / ".sbatch_ar_raw").read_text()
+        self.assertIn("#SBATCH --gres=gpu:a100:4", script)
+        self.assertNotIn("--gres=gpu:1", script)
 
 
 if __name__ == "__main__":

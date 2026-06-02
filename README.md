@@ -37,6 +37,20 @@
 
 ## Recent Updates
 
+**2026-06-02 — Slurm execution backend**
+
+- Added `execution.mode: "slurm"` so the agent can drive experiments on a Slurm
+  cluster. The controller stays local; training is submitted to the login node
+  with `sbatch --parsable` over a single transient SSH call that exits
+  immediately — **no process is ever left running on the login node**. `sacct`
+  is the sole liveness authority (Slurm enforces `--time`), GPU status is read
+  from the partition's `squeue` occupancy, and two bounds inside the liveness
+  check (consecutive-unknown grace + a `--time`-derived wall-clock cap)
+  guarantee the monitor loop terminates even if the cluster goes unreachable.
+  File and repo-reading ops reuse the SSH path (the login node shares the NFS
+  workspace). Additive and opt-in; `local`/`ssh` behavior is unchanged.
+  (`core/execution.py`, +19 unit tests, no cluster required)
+
 **2026-06-01 — v2.0 (major update)**
 
 This release gives the agent (a) a persistent, queryable memory of its own
@@ -994,6 +1008,27 @@ In SSH mode, controller state still stays local:
 The remote host only handles the tool-visible workspace, training process,
 training logs, PID checks, and `nvidia-smi`.
 
+On a **Slurm cluster**, set `mode: "slurm"`. The controller still stays on your
+laptop; training is submitted to the login node with `sbatch --parsable` over a
+single transient SSH call that exits immediately (no process is left running on
+the login node), and `sacct` is the sole liveness authority — Slurm enforces
+`--time`, so a job is always reaped by its time limit plus a safety buffer:
+
+```yaml
+execution:
+  mode: "slurm"
+  ssh_host: "user@login-node"
+  remote_workspace: "/nfs/home/user/my_project/workspace"
+  slurm_partition: "gpu-h200"     # required
+  slurm_time: "24:00:00"          # required (--time wall limit)
+  slurm_gpus_per_job: 1           # -> --gres=gpu:N
+  slurm_setup: "module load cuda/12.4"   # optional shell line prepended to the job
+```
+
+In Slurm mode the `gpu` argument to `launch_experiment` is ignored — Slurm
+assigns GPUs via `--gres`, so `CUDA_VISIBLE_DEVICES` is not pinned by the agent.
+See `config.yaml` for the full set of `slurm_*` options.
+
 ```yaml
 # config.yaml
 project:
@@ -1001,9 +1036,9 @@ project:
   brief: "PROJECT_BRIEF.md"
 
 execution:
-  mode: "local"                  # or "ssh"
-  ssh_host: ""                   # required in ssh mode
-  remote_workspace: ""           # required in ssh mode
+  mode: "local"                  # or "ssh" / "slurm"
+  ssh_host: ""                   # required in ssh/slurm mode
+  remote_workspace: ""           # required in ssh/slurm mode
   remote_python: "python3"
   ssh_args: []
 

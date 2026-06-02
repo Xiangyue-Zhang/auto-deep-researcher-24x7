@@ -117,12 +117,19 @@ Execution is pluggable:
 - **SSHExecutionBackend**: keeps controller state local, but runs the tool-visible
   workspace, training commands, log reads, PID checks, and GPU queries on one
   remote host over SSH
+- **SlurmExecutionBackend**: for Slurm-managed clusters. Subclasses the SSH backend
+  (file/repo/`run_command` ops run on the login node, which shares the NFS
+  workspace) and only changes job handling: training is submitted with
+  `sbatch --parsable` over one transient ssh call that exits immediately, so no
+  process is ever left running on the login node. The Slurm job id is carried in
+  the `pid` field, `sacct` is the sole liveness authority (Slurm enforces
+  `--time`, so a job is guaranteed terminal by `--time` + a buffer), and GPU
+  status is reported from the partition's `squeue` occupancy.
 
-The SSH backend is intentionally narrow in v1:
-- one remote host
+The SSH/Slurm backends are intentionally narrow:
+- one remote host (the login node, in Slurm mode)
 - one remote workspace root
-- no scheduler integration
-- no multi-host orchestration
+- single-cluster Slurm submission; no multi-host orchestration
 
 ### 6. Tool Registry (`core/tools.py`)
 

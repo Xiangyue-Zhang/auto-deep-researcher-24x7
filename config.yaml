@@ -10,11 +10,30 @@ execution:
   # Where tools and training commands run:
   #   "local" — current behavior; use project.workspace on this machine
   #   "ssh"   — keep controller state local but run tools/training on one remote host
+  #   "slurm" — submit training to a Slurm cluster via a login node. The controller
+  #             stays local; jobs are submitted with `sbatch --parsable` over one
+  #             transient ssh call that exits immediately (no login-node process is
+  #             left running), and `sacct` is the sole liveness authority. File ops
+  #             reuse the ssh path (login node shares the NFS workspace).
   mode: "local"
-  ssh_host: ""                    # Required when mode="ssh", e.g. "user@server"
-  remote_workspace: ""            # Required when mode="ssh", remote tool-visible workspace root
+  ssh_host: ""                    # Required when mode="ssh"/"slurm", e.g. "user@login-node"
+  remote_workspace: ""            # Required when mode="ssh"/"slurm", remote tool-visible workspace root
   remote_python: "python3"        # Python used on the remote host for the helper shim
   ssh_args: []                    # Optional extra ssh argv items, e.g. ["-p", "2222"]
+
+  # --- mode="slurm" only (ignored otherwise) ---
+  slurm_partition: ""             # Required in slurm mode: the partition/queue to submit to
+  slurm_time: ""                  # Required in slurm mode: --time wall limit, e.g. "24:00:00" or "2-00:00:00"
+  slurm_gpus_per_job: 1           # GPUs per job -> --gres=gpu:N (omit/0 to request none)
+  slurm_gres: ""                  # Raw --gres override (e.g. "gpu:a100:2"); takes precedence over slurm_gpus_per_job
+  slurm_qos: ""                   # Optional --qos
+  slurm_account: ""               # Optional --account
+  slurm_setup: ""                 # Optional shell line prepended to the job, e.g. "module load cuda/12.4"
+  slurm_extra_sbatch: []          # Optional extra #SBATCH directives, e.g. ["--nodes=1", "--cpus-per-task=8"]
+  slurm_unknown_grace_polls: 4    # Reap a job after this many consecutive unreachable sacct probes (anti-hang)
+  slurm_time_buffer: 1800         # Force-reap a job this many seconds past its --time (anti-hang backstop)
+  # NOTE: in slurm mode the launch_experiment `gpu` arg is IGNORED — Slurm assigns
+  # GPUs via --gres (slurm_gpus_per_job), so CUDA_VISIBLE_DEVICES is stripped from jobs.
 
 agent:
   # Provider:
