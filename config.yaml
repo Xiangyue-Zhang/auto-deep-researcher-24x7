@@ -41,6 +41,12 @@ agent:
   #   "openai"     — OpenAI-compatible SDK endpoint (default auth env: OPENAI_API_KEY)
   #   "claude_cli" — subprocess, reuses Claude Code / Pro / Max subscription
   #   "codex_cli"  — subprocess, reuses ChatGPT Plus / Pro subscription
+  #   domestic API presets (use a Chinese LLM API instead of a Claude/Codex subscription):
+  #     "deepseek" | "qwen"/"dashscope" | "kimi"/"moonshot" | "glm"/"zhipu"
+  #     Each preset auto-fills the OpenAI-compatible base_url and the default key env
+  #     (DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / MOONSHOT_API_KEY / ZHIPUAI_API_KEY);
+  #     just set `model` to that vendor's model id. base_url/api_key_env stay overridable.
+  #     e.g.  provider: "deepseek"   model: "deepseek-chat"   (export DEEPSEEK_API_KEY)
   #
   # The *_cli options are much cheaper when running many agents in parallel
   # because they share your existing subscription quota instead of per-token

@@ -87,6 +87,21 @@ class AgentDispatcher:
     #   "codex_cli"  — `codex exec` subprocess, uses ChatGPT Plus / Pro subscription
     SUPPORTED_PROVIDERS = ("anthropic", "openai", "claude_cli", "codex_cli")
 
+    # Domestic / OpenAI-compatible API presets. Set `provider` to one of these
+    # to run on a Chinese LLM API instead of a Claude/Codex subscription — the
+    # preset just fills in the OpenAI-compatible base_url and default key env
+    # (both still overridable in config) and routes via the "openai" path.
+    #   name -> (base_url, default api-key env var)
+    PROVIDER_PRESETS = {
+        "deepseek":  ("https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
+        "dashscope": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
+        "qwen":      ("https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
+        "moonshot":  ("https://api.moonshot.cn/v1", "MOONSHOT_API_KEY"),
+        "kimi":      ("https://api.moonshot.cn/v1", "MOONSHOT_API_KEY"),
+        "zhipu":     ("https://open.bigmodel.cn/api/paas/v4", "ZHIPUAI_API_KEY"),
+        "glm":       ("https://open.bigmodel.cn/api/paas/v4", "ZHIPUAI_API_KEY"),
+    }
+
     def __init__(
         self,
         model: str = "claude-sonnet-4-6",
@@ -98,9 +113,20 @@ class AgentDispatcher:
         auth_token: Optional[str] = None,
         auth_token_env: str = "",
     ):
+        # Expand a domestic preset (deepseek / qwen / kimi / glm / ...) into the
+        # OpenAI-compatible path. base_url / api_key_env stay overridable: an
+        # explicit value in config wins over the preset default.
+        self.provider_label = provider
+        preset = self.PROVIDER_PRESETS.get(provider)
+        if preset:
+            preset_base_url, preset_key_env = preset
+            base_url = (base_url or "").strip() or preset_base_url
+            api_key_env = (api_key_env or "").strip() or preset_key_env
+            provider = "openai"
         if provider not in self.SUPPORTED_PROVIDERS:
             raise ValueError(
-                f"Unknown provider '{provider}'. Supported: {self.SUPPORTED_PROVIDERS}"
+                f"Unknown provider '{provider}'. Supported: {self.SUPPORTED_PROVIDERS} "
+                f"or a domestic preset {tuple(self.PROVIDER_PRESETS)}"
             )
         self.model = model
         self.provider = provider

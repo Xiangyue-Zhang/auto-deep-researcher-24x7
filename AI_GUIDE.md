@@ -57,8 +57,10 @@ If no GPU: this framework requires a GPU for training. Suggest cloud GPU (Lambda
 If no API key: guide them to either an official endpoint or a compatible provider:
 - Anthropic: https://console.anthropic.com/ → API Keys → Create Key
 - OpenAI: https://platform.openai.com/api-keys → Create new secret key
-- Qwen / DashScope: create `DASHSCOPE_API_KEY`
-- GLM / BigModel: create `ZHIPUAI_API_KEY`
+- DeepSeek (`provider: deepseek`): create `DEEPSEEK_API_KEY`
+- Qwen / DashScope (`provider: qwen`): create `DASHSCOPE_API_KEY`
+- Kimi / Moonshot (`provider: kimi`): create `MOONSHOT_API_KEY`
+- GLM / BigModel (`provider: glm`): create `ZHIPUAI_API_KEY`
 - MiniMax: create `MINIMAX_API_KEY`
 
 Then set it:
@@ -118,6 +120,21 @@ Ask the user two questions:
 | `openai` | OpenAI-compatible | Per-token API | `OPENAI_API_KEY` or custom env |
 | `claude_cli` | Anthropic | **Flat-rate subscription** | `claude` CLI installed + logged in |
 | `codex_cli` | OpenAI | **Flat-rate subscription** | `codex` CLI installed + logged in |
+| `deepseek` / `qwen` / `kimi` / `glm` | Domestic OpenAI-compatible preset | Per-token API | `DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` / `MOONSHOT_API_KEY` / `ZHIPUAI_API_KEY` |
+
+**Domestic LLM APIs (replace a Claude/Codex subscription with a Chinese API):** set
+`provider` to a one-word preset and `model` to that vendor's model id — the preset
+auto-fills the OpenAI-compatible `base_url` and the default key env. Aliases:
+`qwen`=`dashscope`, `kimi`=`moonshot`, `glm`=`zhipu`. Tell the user to export the
+matching key, e.g. `export DEEPSEEK_API_KEY=...`, then:
+
+```yaml
+agent:
+  provider: "deepseek"     # or qwen / kimi / glm
+  model: "deepseek-chat"   # vendor's model id (e.g. qwen-max, kimi-k2, glm-4.6)
+```
+
+`base_url` / `api_key_env` remain overridable for self-hosted or proxied endpoints.
 
 Model tiers:
 
@@ -136,9 +153,10 @@ agent:
   auth_token_env: ""            # optional custom bearer token env var
 ```
 
-Compatible API examples
-(illustrative only in this repo — these endpoint/model combinations have not
-been live-smoke-tested here):
+Compatible API examples — for the common domestic vendors prefer the one-word
+preset above (`deepseek` / `qwen` / `kimi` / `glm`). The manual `provider: "openai"`
++ `base_url` form below is for any *other* OpenAI-compatible vendor or a custom
+endpoint (illustrative — these endpoint/model combinations are not live-smoke-tested here):
 
 ```yaml
 # Qwen / DashScope
@@ -163,26 +181,41 @@ agent:
   api_key_env: "MINIMAX_API_KEY"
 ```
 
-Optional SSH execution mode:
+Optional remote execution modes (`execution.mode`):
 
 ```yaml
+# SSH — run on one remote host
 execution:
   mode: "ssh"
   ssh_host: "user@server"
   remote_workspace: "/home/user/my_project/workspace"
   remote_python: "python3"
   ssh_args: []                  # optional, e.g. ["-p", "2222"]
+
+# Slurm — submit training to a Slurm cluster via its login node
+execution:
+  mode: "slurm"
+  ssh_host: "user@login-node"
+  remote_workspace: "/nfs/home/user/my_project/workspace"   # shared NFS
+  slurm_partition: "gpu"        # required
+  slurm_time: "24:00:00"        # required, --time wall limit
+  slurm_gpus_per_job: 1         # -> --gres=gpu:1
+  slurm_setup: "module load cuda/12.4"   # optional, prepended to the job
 ```
 
-In SSH mode, the controller state still stays local:
+In SSH/Slurm mode, the controller state still stays local:
 - `PROJECT_BRIEF.md`
 - `workspace/MEMORY_LOG.md`
 - `workspace/state.json`
 - `workspace/HUMAN_DIRECTIVE.md`
 - local progress / Obsidian exports
 
-The remote host handles code edits, shell commands, training, log reads,
-PID checks, and GPU queries.
+The remote host handles code edits, shell commands, training, log reads, and
+status checks. **Slurm specifics:** training is submitted with `sbatch --parsable`
+over one transient SSH call that exits immediately — nothing is left running on the
+login node. Liveness comes from `sacct` (Slurm enforces `--time`), GPUs are assigned
+via `--gres`, and file ops run on the login node (shared NFS). See `config.yaml` for
+the full set of `slurm_*` keys (`slurm_qos`, `slurm_account`, `slurm_extra_sbatch`, …).
 
 **When to pick subscription (`claude_cli` / `codex_cli`):**
 - Running multiple agents in parallel (one subscription can power them all)
@@ -316,6 +349,15 @@ ssh user@server 'tail -50 /home/user/my_project/workspace/logs/exp001.log'
 ssh user@server nvidia-smi
 ```
 
+If `execution.mode=slurm`, the workspace/logs live on shared NFS and job state
+comes from Slurm (the login node has no usable `nvidia-smi`):
+
+```bash
+ssh user@login-node 'tail -50 /nfs/home/user/my_project/workspace/logs/exp001.log'
+ssh user@login-node 'squeue --me'          # your queued/running jobs
+ssh user@login-node 'sacct -X --format=JobID,State,Elapsed -S today'   # outcomes
+```
+
 For persistent progress notes:
 
 ```yaml
@@ -400,12 +442,20 @@ THINK (LLM, ~$0.05) → EXECUTE (LLM→training) → MONITOR ($0.00) → REFLECT
 
 ### Why It's Cheap
 During training (90%+ of time), the agent does NOT call the LLM. It only does:
-- backend PID check — is the process alive? (zero cost)
+- backend liveness check — is the job alive? (zero cost)
 - backend `nvidia-smi` — is GPU active? (zero cost)
 - backend `tail -50 logfile` — latest metrics (zero cost)
 
-In local mode the backend is your current machine. In SSH mode the backend is
-one configured remote host, while the controller state stays local.
+In local mode the backend is your current machine. In SSH mode it is one configured
+remote host. In **Slurm** mode liveness comes from a transient `sacct` query (not a
+PID), and there is no persistent process on the login node.
+
+**Truthful experiment outcomes:** when a job finishes, the agent records whether it
+actually **completed** or **failed** (e.g. Slurm `FAILED` / `TIMEOUT` / `CANCELLED`)
+rather than assuming success — the outcome flows into `state.json`, the experiment
+ledger, and the REFLECT context, so the agent reacts to real failures instead of
+reasoning over a crashed run's partial log. (pid-only `local`/`ssh` backends report
+the outcome as indeterminate and keep prior behavior.)
 
 ### Memory System
 - Tier 1: `PROJECT_BRIEF.md` — frozen, human-written, max 3000 chars
@@ -472,6 +522,11 @@ pip install anthropic openai
 export ANTHROPIC_API_KEY="your-key-here"
 # OR
 export OPENAI_API_KEY="your-key-here"
+# OR a domestic-preset key matching agent.provider:
+export DEEPSEEK_API_KEY="..."   # provider: deepseek
+export DASHSCOPE_API_KEY="..."  # provider: qwen
+export MOONSHOT_API_KEY="..."   # provider: kimi
+export ZHIPUAI_API_KEY="..."    # provider: glm
 ```
 
 ### "Dry-run failed"
@@ -485,7 +540,7 @@ echo "You've tried X three times. Try something completely different: Y" \
 ```
 
 ### "Training crashed"
-The agent automatically detects crashes (PID dies), reads the error log, and tries to fix the issue. If it keeps crashing, intervene with a directive.
+The agent automatically detects when a job ends, reads the error log, and tries to fix the issue. It records the real outcome — `completed` vs `failed` — so a crash/timeout is not mislabelled as success (on Slurm the outcome comes from the `sacct` terminal state). If it keeps crashing, intervene with a directive.
 
 ### "Memory is full / context too long"
 This shouldn't happen — memory is capped at 5K chars. If it does, check:
