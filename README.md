@@ -37,6 +37,23 @@
 
 ## Recent Updates
 
+**2026-06-03 — Domestic LLM API presets**
+
+- Run the agent on a **Chinese LLM API instead of a Claude/Codex subscription** by
+  setting `agent.provider` to a one-word preset — `deepseek`, `qwen` (`dashscope`),
+  `kimi` (`moonshot`), or `glm` (`zhipu`). The preset auto-fills the OpenAI-compatible
+  `base_url` and the default key env (`DEEPSEEK_API_KEY` / `DASHSCOPE_API_KEY` /
+  `MOONSHOT_API_KEY` / `ZHIPUAI_API_KEY`); you just set `model` to that vendor's model
+  id. `base_url` / `api_key_env` stay overridable for self-hosted or proxied endpoints.
+  This is a thin alias over the existing OpenAI-compatible path — no new dependency.
+  (`core/agents.py`)
+
+  ```yaml
+  agent:
+    provider: "deepseek"      # or qwen / kimi / glm
+    model: "deepseek-chat"    # vendor's model id
+  ```
+
 **2026-06-02 — Slurm execution backend + truthful experiment outcomes**
 
 - **Slurm execution backend** — added `execution.mode: "slurm"` so the agent can

@@ -93,6 +93,54 @@ class CompatibleProviderConfigTests(unittest.TestCase):
         self.assertEqual(result, "minimax ok")
 
 
+class DomesticProviderPresetTests(unittest.TestCase):
+    def test_preset_fills_base_url_and_key_env_and_routes_via_openai(self):
+        with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "ds-secret"}, clear=False):
+            d = AgentDispatcher(provider="deepseek", model="deepseek-chat")
+        self.assertEqual(d.provider, "openai")          # routed through the OpenAI path
+        self.assertEqual(d.provider_label, "deepseek")  # original name kept for logs
+        self.assertEqual(d.base_url, "https://api.deepseek.com/v1")
+        self.assertEqual(d.api_key, "ds-secret")
+        self.assertEqual(d.model, "deepseek-chat")      # model passed through verbatim
+
+    def test_preset_aliases_resolve(self):
+        for name, host in [
+            ("qwen", "dashscope.aliyuncs.com"),
+            ("kimi", "api.moonshot.cn"),
+            ("glm", "open.bigmodel.cn"),
+        ]:
+            d = AgentDispatcher(provider=name, model="m")
+            self.assertEqual(d.provider, "openai")
+            self.assertIn(host, d.base_url)
+
+    def test_explicit_base_url_and_key_env_override_preset(self):
+        with patch.dict(os.environ, {"MY_KEY": "k"}, clear=False):
+            d = AgentDispatcher(
+                provider="deepseek", model="deepseek-chat",
+                base_url="https://proxy.internal/v1", api_key_env="MY_KEY",
+            )
+        self.assertEqual(d.base_url, "https://proxy.internal/v1")
+        self.assertEqual(d.api_key, "k")
+
+    def test_preset_call_passes_base_url_and_model(self):
+        create = MagicMock(return_value=_OpenAIResponse("deepseek ok"))
+        client = types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create))
+        )
+        ctor = MagicMock(return_value=client)
+        with patch.dict("sys.modules", {"openai": types.SimpleNamespace(OpenAI=ctor)}):
+            with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "ds-secret"}, clear=False):
+                d = AgentDispatcher(provider="deepseek", model="deepseek-reasoner")
+                result = d._call_openai("sys", [{"role": "user", "content": "hi"}])
+        ctor.assert_called_once_with(api_key="ds-secret", base_url="https://api.deepseek.com/v1")
+        self.assertEqual(create.call_args.kwargs["model"], "deepseek-reasoner")
+        self.assertEqual(result, "deepseek ok")
+
+    def test_unknown_provider_error_mentions_presets(self):
+        with self.assertRaisesRegex(ValueError, "deepseek"):
+            AgentDispatcher(provider="not-a-provider", model="m")
+
+
 class ResearchLoopProviderConfigTests(unittest.TestCase):
     @patch("core.loop.AgentDispatcher")
     @patch("core.loop.ToolRegistry")
