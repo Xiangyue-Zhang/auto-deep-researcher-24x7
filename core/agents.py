@@ -87,12 +87,14 @@ class AgentDispatcher:
     #   "codex_cli"  — `codex exec` subprocess, uses ChatGPT Plus / Pro subscription
     SUPPORTED_PROVIDERS = ("anthropic", "openai", "claude_cli", "codex_cli")
 
-    # Domestic / OpenAI-compatible API presets. Set `provider` to one of these
-    # to run on a Chinese LLM API instead of a Claude/Codex subscription — the
+    # OpenAI-compatible API presets. Set `provider` to one of these
+    # to run on a compatible LLM API instead of a Claude/Codex subscription — the
     # preset just fills in the OpenAI-compatible base_url and default key env
     # (both still overridable in config) and routes via the "openai" path.
     #   name -> (base_url, default api-key env var)
     PROVIDER_PRESETS = {
+        "atlascloud": ("https://api.atlascloud.ai/v1", "ATLASCLOUD_API_KEY"),
+        "atlas":     ("https://api.atlascloud.ai/v1", "ATLASCLOUD_API_KEY"),
         "deepseek":  ("https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
         "dashscope": ("https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
         "qwen":      ("https://dashscope.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
@@ -113,7 +115,7 @@ class AgentDispatcher:
         auth_token: Optional[str] = None,
         auth_token_env: str = "",
     ):
-        # Expand a domestic preset (deepseek / qwen / kimi / glm / ...) into the
+        # Expand a compatible preset (atlascloud / deepseek / qwen / kimi / glm / ...) into the
         # OpenAI-compatible path. base_url / api_key_env stay overridable: an
         # explicit value in config wins over the preset default.
         self.provider_label = provider

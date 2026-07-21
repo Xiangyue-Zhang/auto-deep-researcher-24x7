@@ -41,11 +41,12 @@ agent:
   #   "openai"     — OpenAI-compatible SDK endpoint (default auth env: OPENAI_API_KEY)
   #   "claude_cli" — subprocess, reuses Claude Code / Pro / Max subscription
   #   "codex_cli"  — subprocess, reuses ChatGPT Plus / Pro subscription
-  #   domestic API presets (use a Chinese LLM API instead of a Claude/Codex subscription):
-  #     "deepseek" | "qwen"/"dashscope" | "kimi"/"moonshot" | "glm"/"zhipu"
+  #   OpenAI-compatible API presets (use a compatible LLM API instead of a Claude/Codex subscription):
+  #     "atlascloud"/"atlas" | "deepseek" | "qwen"/"dashscope" | "kimi"/"moonshot" | "glm"/"zhipu"
   #     Each preset auto-fills the OpenAI-compatible base_url and the default key env
-  #     (DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / MOONSHOT_API_KEY / ZHIPUAI_API_KEY);
+  #     (ATLASCLOUD_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / MOONSHOT_API_KEY / ZHIPUAI_API_KEY);
   #     just set `model` to that vendor's model id. base_url/api_key_env stay overridable.
+  #     e.g.  provider: "atlascloud" model: "qwen/qwen3.5-flash" (export ATLASCLOUD_API_KEY)
   #     e.g.  provider: "deepseek"   model: "deepseek-chat"   (export DEEPSEEK_API_KEY)
   #
   # The *_cli options are much cheaper when running many agents in parallel
@@ -65,7 +66,7 @@ agent:
   # Model selection per provider:
   #   anthropic:  claude-sonnet-4-6 (fast) | claude-opus-4-6 (strongest)
   #   openai:     codex-5.3 (fast)         | gpt-5.4 (strongest)
-  #                or any OpenAI-compatible model id such as qwen / glm / minimax
+  #                or any OpenAI-compatible model id such as Atlas Cloud / qwen / glm / minimax
   #   claude_cli: whichever model your `claude` CLI is configured to use
   #   codex_cli:  whichever model your `codex` CLI is configured to use
   model: "claude-sonnet-4-6"

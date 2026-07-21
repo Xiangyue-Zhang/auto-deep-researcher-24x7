@@ -93,7 +93,25 @@ class CompatibleProviderConfigTests(unittest.TestCase):
         self.assertEqual(result, "minimax ok")
 
 
-class DomesticProviderPresetTests(unittest.TestCase):
+class CompatibleProviderPresetTests(unittest.TestCase):
+    def test_atlascloud_preset_fills_base_url_and_key_env_and_routes_via_openai(self):
+        with patch.dict(os.environ, {"ATLASCLOUD_API_KEY": "atlas-secret"}, clear=False):
+            d = AgentDispatcher(provider="atlascloud", model="qwen/qwen3.5-flash")
+        self.assertEqual(d.provider, "openai")
+        self.assertEqual(d.provider_label, "atlascloud")
+        self.assertEqual(d.base_url, "https://api.atlascloud.ai/v1")
+        self.assertEqual(d.api_key, "atlas-secret")
+        self.assertEqual(d.model, "qwen/qwen3.5-flash")
+
+    def test_atlas_alias_resolves_to_atlascloud_preset(self):
+        with patch.dict(os.environ, {"ATLASCLOUD_API_KEY": "atlas-secret"}, clear=False):
+            d = AgentDispatcher(provider="atlas", model="deepseek-ai/deepseek-v4-pro")
+        self.assertEqual(d.provider, "openai")
+        self.assertEqual(d.provider_label, "atlas")
+        self.assertEqual(d.base_url, "https://api.atlascloud.ai/v1")
+        self.assertEqual(d.api_key, "atlas-secret")
+        self.assertEqual(d.model, "deepseek-ai/deepseek-v4-pro")
+
     def test_preset_fills_base_url_and_key_env_and_routes_via_openai(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "ds-secret"}, clear=False):
             d = AgentDispatcher(provider="deepseek", model="deepseek-chat")
@@ -137,7 +155,7 @@ class DomesticProviderPresetTests(unittest.TestCase):
         self.assertEqual(result, "deepseek ok")
 
     def test_unknown_provider_error_mentions_presets(self):
-        with self.assertRaisesRegex(ValueError, "deepseek"):
+        with self.assertRaisesRegex(ValueError, "atlascloud"):
             AgentDispatcher(provider="not-a-provider", model="m")
 
 
