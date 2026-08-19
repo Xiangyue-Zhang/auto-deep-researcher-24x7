@@ -429,7 +429,7 @@ python install.py --uninstall
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=Xiangyue-Zhang/auto-deep-researcher-24x7&type=Date&v=20260408-1)](https://www.star-history.com/#Xiangyue-Zhang/auto-deep-researcher-24x7&Date)
+[![Star History Chart](https://star-history.dera.page/svg?repos=Xiangyue-Zhang/auto-deep-researcher-24x7&type=Date&v=20260408-1)](https://star-history.dera.page/#Xiangyue-Zhang/auto-deep-researcher-24x7&Date)
 
 ## 라이선스
 
